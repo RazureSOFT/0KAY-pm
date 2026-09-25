@@ -3,7 +3,9 @@ import path from 'node:path'
 import {spawn} from 'node:child_process'
 import {randomUUID} from 'node:crypto'
 import {existsSync,mkdirSync,writeFileSync} from 'node:fs'
+import http from 'node:http'
 import https from 'node:https'
+import tls from 'node:tls'
 import zlib from 'node:zlib'
 
 export const packages={
@@ -70,15 +72,49 @@ export function extractTarGz(buffer,target){
   writeFileSync(destination,content,{mode:mode&0o777})
  }
 }
+/** Environment HTTP proxy for downloads: HTTPS_PROXY, HTTP_PROXY or ALL_PROXY. */
+export function resolveProxy(env=process.env){
+ const raw=env.HTTPS_PROXY||env.https_proxy||env.HTTP_PROXY||env.http_proxy||env.ALL_PROXY||env.all_proxy
+ if(!raw)return null
+ try{
+  const url=new URL(raw)
+  return url.protocol==='http:'||url.protocol==='https:'?url:null
+ }catch{return null}
+}
+/** https.Agent that tunnels connections through an HTTP CONNECT proxy. */
+class ProxyTunnelAgent extends https.Agent{
+ constructor(proxy){super({keepAlive:false});this.proxy=proxy}
+ createConnection(options,callback){
+  const target=options.host
+  const port=options.port||443
+  const headers={Host:`${target}:${port}`}
+  if(this.proxy.username)headers['Proxy-Authorization']=`Basic ${Buffer.from(`${decodeURIComponent(this.proxy.username)}:${decodeURIComponent(this.proxy.password)}`).toString('base64')}`
+  const connect=http.request({host:this.proxy.hostname,port:this.proxy.port||(this.proxy.protocol==='https:'?443:80),method:'CONNECT',path:`${target}:${port}`,headers})
+  connect.on('connect',(response,socket)=>{
+   if(response.statusCode!==200){socket.destroy();callback(new Error(`Proxy CONNECT failed (${response.statusCode})`));return}
+   callback(null,tls.connect({socket,servername:options.servername||target,rejectUnauthorized:options.rejectUnauthorized!==false}))
+  })
+  connect.on('error',callback)
+  connect.end()
+ }
+}
+let cachedAgent
+/** Reuse one tunnel agent per proxy URL; null when no proxy is configured. */
+function environmentAgent(){
+ const proxy=resolveProxy()
+ if(!proxy)return null
+ if(!cachedAgent||cachedAgent.proxy.href!==proxy.href)cachedAgent=new ProxyTunnelAgent(proxy)
+ return cachedAgent
+}
 /** One HTTPS GET with redirect following; resolves the full body buffer. */
-function downloadOnce(url,redirects=5){
+function downloadOnce(url,redirects=5,agent=null){
  return new Promise((resolve,reject)=>{
   if(redirects<0){reject(new Error(`Too many redirects: ${url}`));return}
-  const request=https.get(url,{timeout:120000},response=>{
+  const request=https.get(url,{timeout:120000,agent},response=>{
    const status=response.statusCode||0
    if(status>=300&&status<400&&response.headers.location){
     response.resume()
-    downloadOnce(new URL(response.headers.location,url).toString(),redirects-1).then(resolve,reject)
+    downloadOnce(new URL(response.headers.location,url).toString(),redirects-1,agent).then(resolve,reject)
     return
    }
    if(status!==200){response.resume();reject(new Error(`Download failed (${status}): ${url}`));return}
@@ -95,10 +131,11 @@ function downloadOnce(url,redirects=5){
 export async function downloadArchive(repository,target,options={}){
  const archive=archiveUrl(repository,'main',options.tag||null)
  const url=options.proxy?`https://gh-proxy.com/${archive}`:archive
+ const agent=environmentAgent()
  let lastError
  for(let attempt=1;attempt<=3;attempt++){
   try{
-   const buffer=await downloadOnce(url)
+   const buffer=await downloadOnce(url,5,agent)
    await fs.rm(target,{recursive:true,force:true})
    extractTarGz(buffer,target)
    return

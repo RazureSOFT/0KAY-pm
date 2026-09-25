@@ -4,7 +4,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import zlib from 'node:zlib'
-import {archiveUrl,extractTarGz} from '../src/installer.mjs'
+import {archiveUrl,extractTarGz,resolveProxy} from '../src/installer.mjs'
 
 function header(name,size,type,mode='0000644'){
  const buffer=Buffer.alloc(512)
@@ -76,4 +76,14 @@ test('archiveUrl selects branches and release tags',()=>{
  const repo='https://github.com/RazureSOFT/0KAY.git'
  assert.equal(archiveUrl(repo),'https://github.com/RazureSOFT/0KAY/archive/refs/heads/main.tar.gz')
  assert.equal(archiveUrl(repo,'main','v0.1.0'),'https://github.com/RazureSOFT/0KAY/archive/refs/tags/v0.1.0.tar.gz')
+})
+test('resolveProxy reads standard proxy environment variables',()=>{
+ assert.equal(resolveProxy({}),null)
+ assert.equal(resolveProxy({NO_PROXY:'x'}),null)
+ assert.equal(resolveProxy({HTTPS_PROXY:'   '}),null)
+ assert.equal(resolveProxy({HTTPS_PROXY:'socks5://127.0.0.1:7890'}),null)
+ assert.equal(resolveProxy({HTTPS_PROXY:'http://127.0.0.1:7890'}).href,'http://127.0.0.1:7890/')
+ assert.equal(resolveProxy({https_proxy:'http://10.0.0.1:8080'}).hostname,'10.0.0.1')
+ assert.equal(resolveProxy({HTTP_PROXY:'http://proxy:8080'}).port,'8080')
+ assert.equal(resolveProxy({ALL_PROXY:'http://all:3128'}).port,'3128')
 })
