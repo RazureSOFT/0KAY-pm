@@ -152,15 +152,15 @@ async function nodeAsset(version,info,agent){
  return {filename,url:base+filename,sha256:shasums.get(filename)||null,archive:info.nodeOS==='win'?'zip':'tar.gz'}
 }
 async function pythonAsset(version,info,agent){
- const headers={'user-agent':'0kay-pm','accept':'application/vnd.github+json'}
- const release=JSON.parse((await downloadOnce('https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest',5,agent,headers)).toString('utf8'))
- const name=selectPythonAsset((release.assets||[]).map(entry=>entry.name),version,info.triple)
+ // Resolve without the GitHub API (unauthenticated calls are easily rate
+ // limited to 403). The latest release always serves a SHA256SUMS asset that
+ // lists every filename + hash, and latest/download/<name> fetches any of them.
+ const base='https://github.com/astral-sh/python-build-standalone/releases/latest/download/'
+ const headers={'user-agent':'0kay-pm'}
+ const sums=parseShasums((await downloadOnce(`${base}SHA256SUMS`,5,agent,headers)).toString('utf8'))
+ const name=selectPythonAsset([...sums.keys()],version,info.triple)
  if(!name)throw new Error(`No python-build-standalone asset for ${version} ${info.triple}`)
- const asset=(release.assets||[]).find(entry=>entry.name===name)
- const shaAsset=(release.assets||[]).find(entry=>entry.name===`${name}.sha256`)
- let sha256=null
- if(shaAsset){const body=(await downloadOnce(shaAsset.browser_download_url,5,agent,headers)).toString('utf8');sha256=(/^[0-9a-f]{64}/.exec(body.trim())||[])[0]||null}
- return {filename:name,url:asset.browser_download_url,sha256,archive:'tar.gz'}
+ return {filename:name,url:base+encodeURIComponent(name),sha256:sums.get(name)||null,archive:'tar.gz'}
 }
 function runFile(file,args){
  return new Promise((resolve,reject)=>{execFile(file,args,{windowsHide:true},error=>error?reject(error):resolve())})
