@@ -36,7 +36,9 @@ const proxyMirror=args.includes('--proxy')&&!proxyUrl
 const allowToolchainDownload=!args.includes('--no-toolchain-download')&&process.env.OKAY_TOOLCHAIN_DOWNLOAD!=='0'
 let toolchainAgent=null
 try{toolchainAgent=proxyAgentFor({proxyUrl})}catch{toolchainAgent=null}
-configureToolchains({home,allowDownload:allowToolchainDownload,agent:toolchainAgent})
+// Forward --proxy to build tools (go module proxy, pip, npm) as well.
+const buildProxy=proxyUrl?(String(proxyUrl).includes('://')?String(proxyUrl):`http://${proxyUrl}`):null
+configureToolchains({home,allowDownload:allowToolchainDownload,agent:toolchainAgent,proxy:buildProxy})
 const askPort=async(label,def)=>{while(true){const raw=await ask(`${label} [${def}]: `);if(!raw)return def;try{return parsePort(label,raw)}catch(error){console.log(error.message)}}}
 /** Ports are asked interactively during install; flags override for scripts. */
 async function portChoices(name){

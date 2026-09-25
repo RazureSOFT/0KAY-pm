@@ -34,7 +34,8 @@ run with the system toolchains when present. When `go`, `node` or `python` is
 `~/.0kay/toolchains/<name>/<version>` and uses it for that command — no `sudo`
 and no system changes. Go versions are read from the package `go.mod` (falling
 back to a pinned default), and downloads honor `--proxy` / `HTTPS_PROXY` like
-repository fetches.
+repository fetches. The same proxy is exported to build commands, so Go's
+module proxy, `pip` and `npm` reuse the tunnel.
 
 Disable it with `--no-toolchain-download` (or `OKAY_TOOLCHAIN_DOWNLOAD=0`).
 Checksum verification fails closed; override only when a publisher does not

@@ -92,9 +92,10 @@ function findExecutable(name,cwd,extraDirs=[]){
 const EXECUTABLE_FALLBACKS={python:['python3'],python3:['python']}
 /**
  * Toolchain config shared by run(): where user-level toolchains live, whether
- * downloading them is allowed, and the proxy/agent used for those downloads.
+ * downloading them is allowed, the proxy/agent used for downloads, and an
+ * optional proxy to forward to build commands (go/pip/npm).
  */
-let toolchainConfig={home:null,allowDownload:true,agent:null,log:null}
+let toolchainConfig={home:null,allowDownload:true,agent:null,log:null,proxy:null}
 export function configureToolchains(options={}){toolchainConfig={...toolchainConfig,...options}}
 let cachedBinDirs=null
 async function toolchainPathDirs(){
@@ -119,7 +120,11 @@ export async function run(command,cwd,env={}){
  }
  const extraDirs=await toolchainPathDirs()
  const pathValue=[...extraDirs,...String(env.PATH??process.env.PATH??'').split(path.delimiter).filter(Boolean)].join(path.delimiter)
- const child=spawn(executable,args,{cwd,env:{...process.env,...env,PATH:pathValue,GOTOOLCHAIN:process.env.GOTOOLCHAIN||'auto'},stdio:'inherit',shell})
+ // Forward an explicit proxy so module fetches (go proxy.golang.org, pip, npm)
+ // reuse the same tunnel as the archive download.
+ const proxyEnv={}
+ if(toolchainConfig.proxy){proxyEnv.HTTPS_PROXY=toolchainConfig.proxy;proxyEnv.HTTP_PROXY=toolchainConfig.proxy;proxyEnv.ALL_PROXY=toolchainConfig.proxy;if(process.env.NO_PROXY)proxyEnv.NO_PROXY=process.env.NO_PROXY}
+ const child=spawn(executable,args,{cwd,env:{...process.env,...proxyEnv,...env,PATH:pathValue,GOTOOLCHAIN:process.env.GOTOOLCHAIN||'auto'},stdio:'inherit',shell})
  return await new Promise((resolve,reject)=>{child.on('error',reject);child.on('exit',code=>code===0?resolve():reject(new Error(`${executable} exited ${code}`)))})
 }
 export async function installPackage(name,options,state,stack=[]) {

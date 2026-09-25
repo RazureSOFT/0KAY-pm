@@ -4,6 +4,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import {platformInfo,toolchainFor,isKnownToolchain,binDirs,executablePath,parseShasums,goFilename,nodeFilename,selectGoRelease,selectPythonAsset,requiredGoVersion,ensureToolchain} from '../src/toolchain.mjs'
+import {run,configureToolchains} from '../src/installer.mjs'
 
 test('platformInfo maps runtime triplets for source archives',()=>{
  assert.deepEqual(platformInfo('linux','x64'),{platform:'linux',arch:'x64',goos:'linux',nodeOS:'linux',goArch:'amd64',nodeArch:'x64',triple:'x86_64-unknown-linux-gnu'})
@@ -87,4 +88,17 @@ test('requiredGoVersion reads go.mod and the toolchain directive',async()=>{
 test('ensureToolchain returns null when downloads are disabled or the tool is unknown',async()=>{
  assert.equal(await ensureToolchain('definitely-missing-command-0kay',{allowDownload:true}),null)
  assert.equal(await ensureToolchain('go',{home:path.join(os.tmpdir(),'0kay-pm-none'),allowDownload:false}),null)
+})
+
+test('run forwards the configured proxy to build commands',async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'0kay-pm-proxy-'))
+ try{
+  configureToolchains({home:path.join(root,'home'),allowDownload:false,proxy:'http://192.168.1.15:7890'})
+  const out=path.join(root,'env.txt')
+  await run([process.execPath,'-e',`require('fs').writeFileSync(${JSON.stringify(out)},process.env.HTTPS_PROXY||'')`],root)
+  assert.equal(await fs.readFile(out,'utf8'),'http://192.168.1.15:7890')
+ }finally{
+  configureToolchains({proxy:null})
+  await fs.rm(root,{recursive:true,force:true})
+ }
 })
