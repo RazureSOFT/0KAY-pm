@@ -71,6 +71,30 @@ export function goFilename(version,info){
  const ext=info.goos==='windows'?'zip':'tar.gz'
  return `go${version}.${info.goos}-${info.goArch}.${ext}`
 }
+function compareGoVersions(a,b){
+ const pa=a.replace(/^go/,'').split('.').map(Number)
+ const pb=b.replace(/^go/,'').split('.').map(Number)
+ for(let index=0;index<Math.max(pa.length,pb.length);index++){
+  const left=pa[index]||0,right=pb[index]||0
+  if(left!==right)return left-right
+ }
+ return 0
+}
+/**
+ * Choose the Go release satisfying a go.mod requirement. Prefers the exact
+ * patch, then the newest patch of the same major.minor (patch releases are
+ * forward compatible; go.dev only indexes the required patch in its full list).
+ */
+export function selectGoRelease(releases,version){
+ const wanted=`go${version}`
+ const exact=(releases||[]).find(release=>release.version===wanted)
+ if(exact)return exact
+ const [major,minor]=version.split('.')
+ if(major==null||minor==null)return null
+ const patches=(releases||[]).filter(release=>new RegExp(`^go${major}\\.${minor}\\.\\d+$`).test(release.version))
+ if(!patches.length)return null
+ return patches.sort((a,b)=>compareGoVersions(a.version,b.version))[patches.length-1]
+}
 export function nodeFilename(version,info){
  const ext=info.nodeOS==='win'?'zip':'tar.gz'
  return `node-v${version}-${info.nodeOS}-${info.nodeArch}.${ext}`
@@ -94,14 +118,14 @@ export async function requiredGoVersion(cwd){
  return null
 }
 async function goAsset(version,info,agent){
- const filename=goFilename(version,info)
- const releases=JSON.parse((await downloadOnce('https://go.dev/dl/?mode=json',5,agent)).toString('utf8'))
- for(const release of releases){
-  if(release.version!==`go${version}`)continue
-  const file=(release.files||[]).find(entry=>entry.filename===filename)
-  return {filename,url:`https://go.dev/dl/${filename}`,sha256:file?.sha256||null,archive:info.goos==='windows'?'zip':'tar.gz'}
- }
- return {filename,url:`https://go.dev/dl/${filename}`,sha256:null,archive:info.goos==='windows'?'zip':'tar.gz'}
+ // ?mode=json only lists the current and previous stable release; include=all
+ // exposes the full history so a go.mod patch requirement can be resolved.
+ const releases=JSON.parse((await downloadOnce('https://go.dev/dl/?mode=json&include=all',5,agent)).toString('utf8'))
+ const release=selectGoRelease(releases,version)
+ const resolved=release?release.version.replace(/^go/,''):version
+ const filename=goFilename(resolved,info)
+ const file=(release?.files||[]).find(entry=>entry.filename===filename)
+ return {filename,url:`https://go.dev/dl/${filename}`,sha256:file?.sha256||null,archive:info.goos==='windows'?'zip':'tar.gz'}
 }
 async function nodeAsset(version,info,agent){
  const filename=nodeFilename(version,info)

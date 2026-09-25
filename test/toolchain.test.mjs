@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import {platformInfo,toolchainFor,isKnownToolchain,binDirs,executablePath,parseShasums,goFilename,nodeFilename,requiredGoVersion,ensureToolchain} from '../src/toolchain.mjs'
+import {platformInfo,toolchainFor,isKnownToolchain,binDirs,executablePath,parseShasums,goFilename,nodeFilename,selectGoRelease,requiredGoVersion,ensureToolchain} from '../src/toolchain.mjs'
 
 test('platformInfo maps runtime triplets for source archives',()=>{
  assert.deepEqual(platformInfo('linux','x64'),{platform:'linux',arch:'x64',goos:'linux',nodeOS:'linux',goArch:'amd64',nodeArch:'x64',triple:'x86_64-unknown-linux-gnu'})
@@ -44,6 +44,15 @@ test('binDirs and executablePath are platform aware',()=>{
  assert.deepEqual(binDirs('python',dir,'win32'),[dir,path.join(dir,'Scripts')])
  assert.match(executablePath('go',dir,'linux'),/bin[\\/]go$/)
  assert.equal(executablePath('go',dir,'win32'),path.join(dir,'bin','go.exe'))
+})
+
+test('selectGoRelease picks the exact patch or the newest same-minor patch',()=>{
+ const releases=[{version:'go1.27.1'},{version:'go1.27.0'},{version:'go1.26.8'},{version:'go1.27rc3'}]
+ assert.equal(selectGoRelease(releases,'1.27.0').version,'go1.27.0')
+ assert.equal(selectGoRelease(releases,'1.27.2').version,'go1.27.1')
+ assert.equal(selectGoRelease(releases,'1.27').version,'go1.27.1')
+ assert.equal(selectGoRelease(releases,'1.28.0'),null)
+ assert.equal(selectGoRelease([],'1.27.0'),null)
 })
 
 test('requiredGoVersion reads go.mod and the toolchain directive',async()=>{
