@@ -6,7 +6,7 @@ import readline from 'node:readline/promises'
 import {discover,pinnedRequest} from '../src/discovery.mjs'
 import {installPackage,run,validateManifest,within,configureToolchains} from '../src/installer.mjs'
 import {proxyAgentFor} from '../src/download.mjs'
-import {parsePort,portEnv} from '../src/env.mjs'
+import {parsePort,portEnv,bindEnv} from '../src/env.mjs'
 
 const args=process.argv.slice(2)
 if(args[0]?.startsWith('install@'))args.splice(0,1,'install',args[0].slice(7))
@@ -53,6 +53,16 @@ async function portChoices(name){
  if(choices.http==null)choices.http=parsePort('--core-port',flag('--core-port'))
  if(choices.grpc==null)choices.grpc=parsePort('--core-grpc-port',flag('--core-grpc-port'))
  if(choices.webui==null)choices.webui=parsePort('--webui-port',flag('--webui-port'))
+ if(wantsCore||wantsWebui){
+  const bindFlag=flag('--bind-host')
+  if(bindFlag!=null)choices.bindHost=bindFlag
+  else if(args.includes('--expose'))choices.bindHost='0.0.0.0'
+  else if(args.includes('--no-expose'))choices.bindHost=null
+  else if(process.stdin.isTTY){
+   const answer=(await ask('Expose Core and WebUI on 0.0.0.0 (reachable from other devices, no authentication)? [y/N] ')).toLowerCase()
+   choices.bindHost=answer==='y'||answer==='yes'?'0.0.0.0':null
+  }else choices.bindHost=null
+ }
  return choices
 }
 async function scan(){const cores=await discover();for(const core of cores){const old=state.cores[core.id];if(old&&old.fingerprint!==core.fingerprint)core.identity_changed=true;state.cores[core.id]=core}await save();return cores}
@@ -79,6 +89,8 @@ async function configure(record,core,choices){
    Object.assign(env,{CORE_ADDRESS:`${core.host}:${core.grpc_port}`,CORE_HTTP_ADDR:`https://${core.host}:${core.http_port}`,CORE_PAIR_TOKEN:core.token,CORE_TLS_CA:core.certificate,CORE_TLS_NAME:core.server_name,NODE_EXTRA_CA_CERTS:core.certificate,AGENT_ADDRESS:`${address}:50054`,AGENT_BIND_HOST:'0.0.0.0',MOCR_ADDRESS:`${core.host}:${core.grpc_port}`})
   }
   Object.assign(env,portEnv(choices,Boolean(core)))
+  Object.assign(env,bindEnv(choices.bindHost,record.name))
+  if(choices.bindHost)console.log(`Exposing Core and WebUI on ${choices.bindHost}; they will be reachable from the network without authentication.`)
   if(record.name==='@razuresoft/0kay'||record.name==='@razuresoft/0kay-core')env.CORE_LAN_ENABLED='1'
  await fs.writeFile(path.join(record.repositoryRoot,'runtime-env.json'),JSON.stringify(env,null,2),{mode:0o600})
 }
@@ -122,6 +134,6 @@ try{
    await startInstalled(record)
   break
  }
-  default:console.log('0kay-pm install <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-pair] [--no-toolchain-download] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-toolchain-download]\n0kay-pm discover\n0kay-pm cores\n0kay-pm start <package>\nPorts are asked interactively on install; the flags override for scripts.\n--proxy alone downloads via the gh-proxy.com mirror; with host:port or a URL it tunnels through that HTTP proxy. HTTPS_PROXY is honored too.\nMissing go/node/python build toolchains are downloaded to ~/.0kay/toolchains; --no-toolchain-download disables that.')
+  default:console.log('0kay-pm install <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-pair] [--no-toolchain-download] [--expose | --bind-host <addr> | --no-expose] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-toolchain-download]\n0kay-pm discover\n0kay-pm cores\n0kay-pm start <package>\nPorts are asked interactively on install; the flags override for scripts.\n--proxy alone downloads via the gh-proxy.com mirror; with host:port or a URL it tunnels through that HTTP proxy. HTTPS_PROXY is honored too.\nMissing go/node/python build toolchains are downloaded to ~/.0kay/toolchains; --no-toolchain-download disables that.\nCore/WebUI installs ask whether to listen on 0.0.0.0; --expose enables it, --bind-host <addr> overrides, --no-expose skips the prompt.')
  }
 }catch(error){console.error(error.message);process.exitCode=1}

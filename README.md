@@ -83,6 +83,13 @@ Scripts can pass the flags instead — the flags skip the prompts for that port:
 When pairing with a remote Core, connection addresses come from pairing; port
 flags then only change the local listeners.
 
+Core and WebUI installs also ask whether to listen on `0.0.0.0`, which exposes
+Core HTTP/gRPC and the WebUI to the network. This is **not authenticated** — only
+enable it on a trusted LAN, or pair devices instead. `--expose` enables it
+non-interactively, `--bind-host <addr>` picks a specific interface, and
+`--no-expose` skips the prompt (`CORE_BIND_HOST` / `WEBUI_HOST` are written to
+`runtime-env.json`).
+
 ## Discovery and pairing
 
 Every install starts with a UDP LAN scan that refreshes the Core history in

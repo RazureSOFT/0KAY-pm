@@ -19,3 +19,18 @@ export function portEnv(ports, paired) {
   if (ports.webui != null) env.WEBUI_PORT = String(ports.webui)
   return env
 }
+
+/**
+ * Bind address for Core and/or WebUI when the user opts to expose them.
+ * `0.0.0.0` listens on every interface; empty/undefined keeps loopback.
+ */
+export function bindEnv(host, name) {
+  const env = {}
+  if (!host) return env
+  const core = name === '@razuresoft/0kay' || name === '@razuresoft/0kay-core'
+  const webui = name === '@razuresoft/0kay' || name === '@razuresoft/0kay-webui'
+  if (core) env.CORE_BIND_HOST = host
+  if (webui) env.WEBUI_HOST = host
+  return env
+}
+

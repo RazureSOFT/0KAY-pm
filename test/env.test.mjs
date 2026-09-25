@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import {parsePort, portEnv} from '../src/env.mjs'
+import {parsePort, portEnv, bindEnv} from '../src/env.mjs'
 
 test('parsePort accepts plain ports and returns null when absent', () => {
   assert.equal(parsePort('--core-port', undefined), null)
@@ -34,4 +34,14 @@ test('portEnv keeps pairing addresses and still sets local listeners', () => {
 
 test('portEnv omits everything when no flags are given', () => {
   assert.deepEqual(portEnv({http: null, grpc: null, webui: null}, false), {})
+})
+
+test('bindEnv sets Core and WebUI bind hosts only for the packages that own them', () => {
+  assert.deepEqual(bindEnv('0.0.0.0', '@razuresoft/0kay'), {CORE_BIND_HOST: '0.0.0.0', WEBUI_HOST: '0.0.0.0'})
+  assert.deepEqual(bindEnv('0.0.0.0', '@razuresoft/0kay-core'), {CORE_BIND_HOST: '0.0.0.0'})
+  assert.deepEqual(bindEnv('0.0.0.0', '@razuresoft/0kay-webui'), {WEBUI_HOST: '0.0.0.0'})
+  assert.deepEqual(bindEnv('0.0.0.0', '@razuresoft/0kay-life'), {})
+  assert.deepEqual(bindEnv(null, '@razuresoft/0kay'), {})
+  assert.deepEqual(bindEnv('', '@razuresoft/0kay-webui'), {})
+  assert.deepEqual(bindEnv('192.168.1.20', '@razuresoft/0kay-core'), {CORE_BIND_HOST: '192.168.1.20'})
 })
