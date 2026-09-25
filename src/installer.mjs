@@ -12,7 +12,7 @@ export const packages={
  '@razuresoft/0kay-core':{repository:'https://github.com/RazureSOFT/0KAY.git',manifest:'core/manifest.json'},
  '@razuresoft/0kay-life':{repository:'https://github.com/RazureSOFT/0KAY.git',manifest:'life/manifest.json'},
  '@razuresoft/0kay-mocr':{repository:'https://github.com/RazureSOFT/0KAY.git',manifest:'mocr/manifest.json'},
- '@razuresoft/0kay-mcp':{repository:'https://github.com/RazureSOFT/0KAY.git',manifest:'mcp/manifest.json'},
+ '@razuresoft/0kay-mcp':{repository:'https://github.com/RazureSOFT/0KAY-mcp.git',manifest:'manifest.json'},
  '@razuresoft/0kay-webui':{repository:'https://github.com/RazureSOFT/0KAY.git',manifest:'webui/manifest.json'},
  '@razuresoft/0kay-searxng':{repository:'https://github.com/RazureSOFT/0KAY.git',manifest:'searxng/manifest.json'},
 }
@@ -190,8 +190,11 @@ export async function installPackage(name,options,state,stack=[]) {
    await fs.cp(mcp.repositoryRoot,staging+'/platform',{recursive:true,filter:source=>!['.git','node_modules','data'].includes(path.basename(source))})
    await fs.mkdir(path.join(staging,'agent'),{recursive:true})
    for(const entry of await fs.readdir(staging)){if(entry==='platform'||entry==='agent')continue;await fs.rename(path.join(staging,entry),path.join(staging,'agent',entry))}
-   await fs.rename(path.join(staging,'platform','mcp'),path.join(staging,'mcp'))
-   await fs.rename(path.join(staging,'platform','proto'),path.join(staging,'proto'))
+   // The KAY-mcp repository keeps the package at its root and proto/ alongside it.
+   const platform=path.join(staging,'platform');await fs.mkdir(path.join(staging,'mcp'),{recursive:true})
+   for(const entry of await fs.readdir(platform)){if(entry==='proto')continue;await fs.rename(path.join(platform,entry),path.join(staging,'mcp',entry))}
+   await fs.rename(path.join(platform,'proto'),path.join(staging,'proto'))
+   await fs.rm(platform,{recursive:true,force:true})
    await run(['npm','ci'],path.join(staging,'mcp'));await run(['npm','run','build'],path.join(staging,'mcp'))
   }
 const cwd=name==='@razuresoft/0kay-agent'?path.join(staging,'agent'):path.dirname(manifestPath)

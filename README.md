@@ -89,6 +89,9 @@ from the repository manifests — only install from repositories you trust.
 arrays; `modules` lists child manifest paths that are built during install
 (child `ui` blocks publish plugin UI bundles too); `dependencies` are package
 names; `requires` lists runtime plugin dependencies.
+The MCP client gateway and the shared protobuf definitions live in the separate
+`RazureSOFT/0KAY-mcp` repository; installing `@razuresoft/0kay-agent` fetches it
+as a dependency and arranges the `mcp/` and `proto/` sibling directories.
 Optional `ui`: `{ dir?, plugin?, dist?, build? }` — runs `build` in `dir` at the
 end of install and atomically publishes `dist` (default `dist`) to
 `${CORE_DATA_DIR||data}/plugin-ui/{plugin||package short name}/`.
