@@ -72,3 +72,8 @@ test('extractTarGz rejects escaping paths',async()=>{
   await assert.rejects(()=>fs.readFile(path.join(root,'..','evil.txt')))
  }finally{await fs.rm(root,{recursive:true,force:true})}
 })
+test('archiveUrl selects branches and release tags',()=>{
+ const repo='https://github.com/RazureSOFT/0KAY.git'
+ assert.equal(archiveUrl(repo),'https://github.com/RazureSOFT/0KAY/archive/refs/heads/main.tar.gz')
+ assert.equal(archiveUrl(repo,'main','v0.1.0'),'https://github.com/RazureSOFT/0KAY/archive/refs/tags/v0.1.0.tar.gz')
+})

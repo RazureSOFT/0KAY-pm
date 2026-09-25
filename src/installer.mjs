@@ -14,13 +14,15 @@ export const packages={
  '@razuresoft/0kay-mocr':{repository:'https://github.com/RazureSOFT/0KAY.git',manifest:'mocr/manifest.json'},
  '@razuresoft/0kay-mcp':{repository:'https://github.com/RazureSOFT/0KAY.git',manifest:'mcp/manifest.json'},
  '@razuresoft/0kay-webui':{repository:'https://github.com/RazureSOFT/0KAY.git',manifest:'webui/manifest.json'},
+ '@razuresoft/0kay-searxng':{repository:'https://github.com/RazureSOFT/0KAY.git',manifest:'searxng/manifest.json'},
 }
 export function within(root,relative){const value=path.resolve(root,relative);if(value!==root&&!value.startsWith(root+path.sep))throw new Error('Manifest path escapes package');return value}
-/** GitHub repository URL → branch tarball URL. Fetches source archives, never git. */
-export function archiveUrl(repository,branch='main'){
+/** GitHub repository URL → source archive URL. Fetches archives, never git. tag null selects the branch. */
+export function archiveUrl(repository,branch='main',tag=null){
  const match=/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(repository)
  if(!match)throw new Error(`Unsupported repository URL: ${repository}`)
- return `https://github.com/${match[1]}/${match[2]}/archive/refs/heads/${branch}.tar.gz`
+ const ref=tag?`refs/tags/${tag}`:`refs/heads/${branch}`
+ return `https://github.com/${match[1]}/${match[2]}/archive/${ref}.tar.gz`
 }
 function tarString(header,offset,length){return header.subarray(offset,offset+length).toString('utf8').split('\0')[0]}
 function parsePax(buffer){
@@ -91,7 +93,8 @@ function downloadOnce(url,redirects=5){
 }
 /** Download a repository source archive and extract it into target (proxy aware, retried). */
 export async function downloadArchive(repository,target,options={}){
- const url=options.proxy?`https://gh-proxy.com/${archiveUrl(repository)}`:archiveUrl(repository)
+ const archive=archiveUrl(repository,'main',options.tag||null)
+ const url=options.proxy?`https://gh-proxy.com/${archive}`:archive
  let lastError
  for(let attempt=1;attempt<=3;attempt++){
   try{
@@ -130,6 +133,15 @@ export async function publishPluginUI(sourceDir,pluginName,dataDir){
  await fs.rename(staging,dest)
  return dest
 }
+/** Run a manifest's ui.build commands and publish its dist directory. */
+async function publishManifestUI(manifest,manifestDir,options){
+ const uiRoot=within(manifestDir,manifest.ui.dir||'.')
+ for(const command of manifest.ui.build||[])await run(command,uiRoot)
+ const dist=path.resolve(uiRoot,manifest.ui.dist||'dist')
+ if(!await fs.stat(dist).then(()=>true,()=>false))throw new Error(`Plugin UI dist missing: ${dist}`)
+ const pluginName=manifest.ui.plugin||manifest.name.split('/')[1]
+ await publishPluginUI(dist,pluginName,options.coreData)
+}
 export function run(command,cwd,env={}){return new Promise((resolve,reject)=>{
  let [executable,...args]=command
  // npm.cmd needs a shell on Windows; manifest arguments cannot inject shell operators.
@@ -144,7 +156,7 @@ export async function installPackage(name,options,state,stack=[]) {
  if(state.installed[name]&&!options.reinstall)return state.installed[name]
  const spec=packages[name];if(!spec)throw new Error(`Unknown package ${name}`)
  const destination=path.join(options.home,'packages',name.split('/')[1]);await fs.mkdir(path.dirname(destination),{recursive:true})
- if(await fs.stat(destination).then(()=>true,()=>false))throw new Error(`Destination already exists: ${destination}; existing work is never overwritten`)
+ if(!options.reinstall&&await fs.stat(destination).then(()=>true,()=>false))throw new Error(`Destination already exists: ${destination}; existing work is never overwritten`)
  const staging=destination+'.install-'+randomUUID();await fs.mkdir(staging,{recursive:true})
  try {
   if(options.source) await fs.cp(path.resolve(options.source),staging,{recursive:true,filter:source=>!['.git','node_modules','dist','data','__pycache__'].includes(path.basename(source))&&!source.endsWith('.log')&&!source.endsWith('.exe')})
@@ -158,7 +170,7 @@ export async function installPackage(name,options,state,stack=[]) {
    const target=within(staging,repository.path)
    if(!await fs.stat(path.join(target,'manifest.json')).then(()=>true,()=>false)){
      const spec=packages[repository.package];if(!spec||spec.repository!==repository.url)throw new Error('Unrecognized module repository')
-     await downloadArchive(repository,target,options)
+      await downloadArchive(repository.url,target,options)
    }
   }
   // A child manifest supplies build commands and cwd; repository layout stays intact.
@@ -166,11 +178,12 @@ export async function installPackage(name,options,state,stack=[]) {
    const siblingSource=options.source&&dependency==='@razuresoft/0kay-mcp'?path.resolve(options.source,'..'):null
    await installPackage(dependency,{...options,source:siblingSource},state,[...stack,name])
   }
-  for(const child of manifest.modules||[]) {
-   const childPath=within(staging,child)
-   const module=validateManifest(JSON.parse(await fs.readFile(childPath,'utf8')))
-   for(const command of module.install||[])await run(command,path.dirname(childPath))
-  }
+   for(const child of manifest.modules||[]) {
+    const childPath=within(staging,child)
+    const module=validateManifest(JSON.parse(await fs.readFile(childPath,'utf8')))
+    for(const command of module.install||[])await run(command,path.dirname(childPath))
+    if(module.ui)await publishManifestUI(module,path.dirname(childPath),options)
+   }
   if(name==='@razuresoft/0kay-agent') {
    const mcp=state.installed['@razuresoft/0kay-mcp'];if(!mcp)throw new Error('MCP dependency missing')
    // Agent expects sibling mcp and proto. Keep them within its installed package.
@@ -183,15 +196,27 @@ export async function installPackage(name,options,state,stack=[]) {
   }
 const cwd=name==='@razuresoft/0kay-agent'?path.join(staging,'agent'):path.dirname(manifestPath)
    for(const command of manifest.install||[])await run(command,cwd)
-   if(manifest.ui){
-    const uiRoot=within(staging,manifest.ui.dir||'.')
-    for(const command of manifest.ui.build||[])await run(command,uiRoot)
-    const dist=path.resolve(uiRoot,manifest.ui.dist||'dist')
-    if(!await fs.stat(dist).then(()=>true,()=>false))throw new Error(`Plugin UI dist missing: ${dist}`)
-    const pluginName=manifest.ui.plugin||name.split('/')[1]
-    await publishPluginUI(dist,pluginName,options.coreData)
-   }
-   await fs.rename(staging,destination)
+   if(manifest.ui)await publishManifestUI(manifest,path.dirname(manifestPath),options)
+    // Preserve runtime data before replacing an installation. Newly built plugin
+    // bundles take precedence over old bundles inside core/data/plugin-ui.
+    if(await fs.stat(destination).then(()=>true,()=>false)){
+     for(const relative of ['data','core/data','life/data','agent/data','mocr/data']){
+      const source=path.join(destination,relative)
+      if(await fs.stat(source).then(()=>true,()=>false))await fs.cp(source,path.join(staging,relative),{recursive:true,force:false,errorOnExist:false})
+     }
+    const previousEnv=await fs.readFile(path.join(destination,'runtime-env.json'),'utf8').catch(()=>null)
+    const backup=destination+'.old-'+randomUUID()
+    await fs.rename(destination,backup)
+    try{
+     if(previousEnv!=null)await fs.writeFile(path.join(staging,'runtime-env.json'),previousEnv,{mode:0o600})
+     await fs.rename(staging,destination)
+    }catch(error){
+     await fs.rm(destination,{recursive:true,force:true}).catch(()=>{})
+      await fs.rename(backup,destination)
+      throw error
+     }
+     // Keep the previous tree as a recovery copy, including unlisted user files.
+   }else await fs.rename(staging,destination)
    const record={name,version:manifest.version,repository:spec.repository,repositoryRoot:destination,cwd:path.join(destination,path.relative(staging,cwd)),start:manifest.start||null,modules:manifest.modules||[],installed_at:new Date().toISOString()}
   // Editable Python installs embed absolute paths. Rebind after atomic promotion.
   if(name==='@razuresoft/0kay-life')await run(['python','-m','pip','install','-e','.'],record.cwd)

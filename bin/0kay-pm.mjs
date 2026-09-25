@@ -17,6 +17,31 @@ try{state={...state,...JSON.parse(await fs.readFile(statePath,'utf8'))}}catch(er
 const save=async()=>{await fs.writeFile(statePath+'.tmp',JSON.stringify(state,null,2),{mode:0o600});await fs.rename(statePath+'.tmp',statePath)}
 const ask=async question=>{if(!process.stdin.isTTY)throw new Error('Interactive terminal required for pairing');const rl=readline.createInterface({input:process.stdin,output:process.stdout});try{return(await rl.question(question)).trim()}finally{rl.close()}}
 const flag=name=>{const index=args.indexOf(name);return index<0?null:args[index+1]}
+/** package[@version] → {name, version}; --version flags the same pin. */
+function parseTarget(raw){
+ if(!raw||raw.startsWith('-'))return {name:raw||null,version:flag('--version')}
+ const at=raw.lastIndexOf('@')
+ const name=at>0?raw.slice(0,at):raw
+ const version=at>0?raw.slice(at+1):flag('--version')
+ return {name,version:version?version.replace(/^v/,''):null}
+}
+const coreDataRoot=()=>path.join(state.installed['@razuresoft/0kay']?.repositoryRoot||path.join(home,'packages','0kay'),'core','data')
+const askPort=async(label,def)=>{while(true){const raw=await ask(`${label} [${def}]: `);if(!raw)return def;try{return parsePort(label,raw)}catch(error){console.log(error.message)}}}
+/** Ports are asked interactively during install; flags override for scripts. */
+async function portChoices(name){
+ const choices={}
+ const wantsCore=name==='@razuresoft/0kay'||name==='@razuresoft/0kay-core'
+ const wantsWebui=name==='@razuresoft/0kay'||name==='@razuresoft/0kay-webui'
+ if(process.stdin.isTTY){
+  if(wantsCore&&flag('--core-port')==null)choices.http=await askPort('Core HTTP port',8080)
+  if(wantsCore&&flag('--core-grpc-port')==null)choices.grpc=await askPort('Core gRPC port',50051)
+  if(wantsWebui&&flag('--webui-port')==null)choices.webui=await askPort('WebUI port',3000)
+ }
+ if(choices.http==null)choices.http=parsePort('--core-port',flag('--core-port'))
+ if(choices.grpc==null)choices.grpc=parsePort('--core-grpc-port',flag('--core-grpc-port'))
+ if(choices.webui==null)choices.webui=parsePort('--webui-port',flag('--webui-port'))
+ return choices
+}
 async function scan(){const cores=await discover();for(const core of cores){const old=state.cores[core.id];if(old&&old.fingerprint!==core.fingerprint)core.identity_changed=true;state.cores[core.id]=core}await save();return cores}
 async function pair(cores){
  if(!cores.length){console.log('No LAN Core discovered. Start Core with CORE_LAN_ENABLED=1; UDP 50050 and TLS 8443/5443 must be reachable.');return null}
@@ -34,13 +59,13 @@ async function pair(cores){
   state.pairings[selected.id]={token:result.token,certificate:cert,server_name:result.server_name};await save();return {...selected,...state.pairings[selected.id]}
  }}throw new Error('Pairing timed out')
 }
-async function configure(record,core){
+async function configure(record,core,choices){
  const env={}
  if(core){const interfaces=Object.values(os.networkInterfaces()).flat().filter(value=>value&&value.family==='IPv4'&&!value.internal);const address=flag('--advertise')||interfaces.find(value=>value.address.split('.').slice(0,3).join('.')===core.host.split('.').slice(0,3).join('.'))?.address
   if(!address)throw new Error('Cannot determine callback address; pass --advertise <LAN-IP>')
    Object.assign(env,{CORE_ADDRESS:`${core.host}:${core.grpc_port}`,CORE_HTTP_ADDR:`https://${core.host}:${core.http_port}`,CORE_PAIR_TOKEN:core.token,CORE_TLS_CA:core.certificate,CORE_TLS_NAME:core.server_name,NODE_EXTRA_CA_CERTS:core.certificate,AGENT_ADDRESS:`${address}:50054`,AGENT_BIND_HOST:'0.0.0.0',MOCR_ADDRESS:`${core.host}:${core.grpc_port}`})
   }
-  Object.assign(env,portEnv({http:parsePort('--core-port',flag('--core-port')),grpc:parsePort('--core-grpc-port',flag('--core-grpc-port')),webui:parsePort('--webui-port',flag('--webui-port'))},Boolean(core)))
+  Object.assign(env,portEnv(choices,Boolean(core)))
   if(record.name==='@razuresoft/0kay'||record.name==='@razuresoft/0kay-core')env.CORE_LAN_ENABLED='1'
  await fs.writeFile(path.join(record.repositoryRoot,'runtime-env.json'),JSON.stringify(env,null,2),{mode:0o600})
 }
@@ -50,11 +75,19 @@ try{
  case 'cores':console.log(JSON.stringify(state.cores,null,2));break
  case 'install':{
   const cores=await scan(); // Mandatory discovery before every install, even offline/local.
-  const name=args[1];if(!name)throw new Error('Usage: 0kay-pm install @razuresoft/0kay-agent')
+  const target=parseTarget(args[1]);if(!target.name)throw new Error('Usage: 0kay-pm install <package>[@version] [--proxy] [--source <local-tree>] [--no-pair]')
   const core=args.includes('--no-pair')?null:await pair(cores)
-  console.log(`Installing ${name}. Package manifests run build/install commands from the selected repository.`)
-  const record=await installPackage(name,{home,source:flag('--source'),proxy:args.includes('--proxy')},state)
-  await configure(record,core);await save();console.log(`Installed ${record.name}.${record.start||record.modules.length?` Start: 0kay-pm start ${record.name}`:' Library package; no standalone process.'}`);break
+  const choices=await portChoices(target.name)
+  console.log(`Installing ${target.name}${target.version?`@${target.version}`:''}. Package manifests run build/install commands from the selected repository.`)
+  const record=await installPackage(target.name,{home,source:flag('--source'),proxy:args.includes('--proxy'),tag:target.version?`v${target.version}`:null,coreData:coreDataRoot()},state)
+  await configure(record,core,choices);await save();console.log(`Installed ${record.name}@${record.version}.${record.start||record.modules.length?` Start: 0kay-pm start ${record.name}`:' Library package; no standalone process.'}`);break
+ }
+ case 'update':{
+  const target=parseTarget(args[1]);if(!target.name)throw new Error('Usage: 0kay-pm update <package>[@version] [--proxy] [--source <local-tree>]')
+  if(!state.installed[target.name])throw new Error(`${target.name} is not installed`)
+  console.log(`Updating ${target.name}${target.version?`@${target.version}`:' to the latest main branch'}.`)
+  const record=await installPackage(target.name,{home,source:flag('--source'),proxy:args.includes('--proxy'),reinstall:true,tag:target.version?`v${target.version}`:null,coreData:coreDataRoot()},state)
+  await save();console.log(`Updated ${record.name}@${record.version}. Start: 0kay-pm start ${record.name}`);break
  }
  case 'start':{
   const record=state.installed[args[1]];if(!record)throw new Error('Package not installed')
@@ -63,6 +96,6 @@ try{
   else if(record.start)await run(record.start,record.cwd,env);else throw new Error('Package has no start command')
   break
  }
-  default:console.log('0kay-pm install <package> [--proxy] [--source <local-tree>] [--no-pair] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm discover\n0kay-pm cores\n0kay-pm start <package>')
+  default:console.log('0kay-pm install <package>[@version] [--proxy] [--source <local-tree>] [--no-pair] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy] [--source <local-tree>]\n0kay-pm discover\n0kay-pm cores\n0kay-pm start <package>\nPorts are asked interactively on install; the flags override for scripts.')
  }
 }catch(error){console.error(error.message);process.exitCode=1}

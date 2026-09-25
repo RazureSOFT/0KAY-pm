@@ -34,12 +34,47 @@ test('install with ui.build publishes plugin-ui',async()=>{
   const source=path.join(root,'source');await fs.mkdir(source)
   await fs.writeFile(path.join(source,'manifest.json'),JSON.stringify({
    schema:1,name:'@razuresoft/0kay',version:'test',install:[],
-   ui:{dir:'.',plugin:'demo',dist:'dist',build:[[process.execPath,'-e',"const fs=require('fs');fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/index.js','export default {}')"]]},
+   ui:{dir:'.',plugin:'demo',dist:'dist',build:[[process.execPath,'-e',"const fs=require('fs');fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/index.html','ok')"]]},
   }))
   const data=path.join(root,'data')
   const state={installed:{}}
   await installPackage('@razuresoft/0kay',{home:path.join(root,'home'),source,coreData:data},state)
-  const published=path.join(data,'plugin-ui','demo','index.js')
-  assert.match(await fs.readFile(published,'utf8'),/export default/)
+  const published=path.join(data,'plugin-ui','demo','index.html')
+  assert.match(await fs.readFile(published,'utf8'),/ok/)
+ }finally{await fs.rm(root,{recursive:true,force:true})}
+})
+test('reinstall replaces the package, keeps runtime-env, and republishes module UIs',async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'0kay-pm-reinstall-'))
+ try{
+  const source=path.join(root,'source');await fs.mkdir(path.join(source,'child'),{recursive:true})
+  const writeManifest=version=>fs.writeFile(path.join(source,'manifest.json'),JSON.stringify({
+   schema:1,name:'@razuresoft/0kay',version,install:[],
+   modules:['child/manifest.json'],
+  }))
+  await writeManifest('1.0.0')
+  await fs.writeFile(path.join(source,'child','manifest.json'),JSON.stringify({
+   schema:1,name:'@razuresoft/0kay-child',version:'1.0.0',install:[],
+   ui:{dir:'.',plugin:'kid',dist:'dist',build:[[process.execPath,'-e',"const f=require('fs');f.mkdirSync('dist',{recursive:true});f.writeFileSync('dist/index.js','v1')"]]},
+  }))
+  const home=path.join(root,'home');const data=path.join(root,'data');const state={installed:{}}
+  const first=await installPackage('@razuresoft/0kay',{home,source,coreData:data},state)
+  assert.equal(first.version,'1.0.0')
+  assert.equal(await fs.readFile(path.join(data,'plugin-ui','kid','index.js'),'utf8'),'v1')
+  await fs.writeFile(path.join(first.repositoryRoot,'runtime-env.json'),'{"CORE_HTTP_PORT":"18080"}',{mode:0o600})
+  await fs.mkdir(path.join(first.repositoryRoot,'core','data'),{recursive:true})
+  await fs.writeFile(path.join(first.repositoryRoot,'core','data','settings.json'),'preserve-me')
+  await writeManifest('2.0.0')
+  await fs.writeFile(path.join(source,'child','manifest.json'),JSON.stringify({
+   schema:1,name:'@razuresoft/0kay-child',version:'2.0.0',install:[],
+   ui:{dir:'.',plugin:'kid',dist:'dist',build:[[process.execPath,'-e',"const f=require('fs');f.mkdirSync('dist',{recursive:true});f.writeFileSync('dist/index.js','v2')"]]},
+  }))
+  const second=await installPackage('@razuresoft/0kay',{home,source,coreData:data,reinstall:true},state)
+  assert.equal(second.version,'2.0.0')
+  assert.equal(await fs.readFile(path.join(second.repositoryRoot,'runtime-env.json'),'utf8'),'{"CORE_HTTP_PORT":"18080"}')
+  assert.equal(await fs.readFile(path.join(data,'plugin-ui','kid','index.js'),'utf8'),'v2')
+  assert.equal(await fs.readFile(path.join(second.repositoryRoot,'core','data','settings.json'),'utf8'),'preserve-me')
+  const entries=await fs.readdir(path.join(home,'packages'))
+  assert.equal(entries.filter(entry=>entry.includes('.old-')).length,1,'previous installation retained for recovery')
+  assert.equal(entries.filter(entry=>entry.includes('.install-')).length,0,'no staging directories remain')
  }finally{await fs.rm(root,{recursive:true,force:true})}
 })

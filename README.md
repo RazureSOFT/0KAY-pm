@@ -1,41 +1,94 @@
 # 0kay-pm
 
-0KAY 快速包管理器：用它安装 0KAY 平台与各模块。Node.js 22+ 即可，**不需要安装 git**——
-源码从 GitHub 的 `archive/refs/heads/main.tar.gz` 归档直接下载解压；各模块还需相应的 Go/Python 编译运行环境。
+Fast package manager for the 0KAY platform. Install 0KAY and its plugins with
+Node.js 22+ only — **git is not required**. Sources are downloaded as GitHub
+`archive` tarballs (branch or release tag) and extracted in-process; each module
+additionally needs its Go/Python build toolchain.
 
-安装 CLI：
+## Install the CLI
 
 ```powershell
-# 独立仓库安装（推荐，不需要 git）
+# Standalone repository install (recommended, no git involved)
 npm install -g https://codeload.github.com/RazureSOFT/0KAY-pm/tar.gz/main
 
-# 或从本地目录安装
+# Or from a local checkout
 npm install -g ./pm
 
 0kay-pm discover
 0kay-pm install @razuresoft/0kay-agent
-0kay-pm install @razuresoft/0kay-agent --proxy
 0kay-pm install @razuresoft/0kay
+0kay-pm update @razuresoft/0kay-agent
 0kay-pm start @razuresoft/0kay
 ```
 
-也兼容 `0kay-pm install@razuresoft/0kay`。发布 npm 后可用
-`npx @razuresoft/0kay-pm install @razuresoft/0kay-agent`，目前没有执行发布。
+`0kay-pm install@razuresoft/0kay` is accepted as well. Once published to npm,
+`npx @razuresoft/0kay-pm install @razuresoft/0kay-agent` will work; the package
+has not been published yet.
 
-每次 install 前都执行 UDP 局域网扫描，更新 `~/.0kay/state.json` 的 Core 历史。
-选择 Core、确认配对后，在 Core 本机「设置 → 通用 → 设备配对」核对代码。
-无 Core 时仍可安装，启动 Core 后重新安装/配置连接；`--no-pair` 跳过询问但不跳过扫描。
-`--advertise <LAN-IP>` 指定回调网卡；多网段广播受路由器、防火墙限制。
+## Releases and versions
 
-`--proxy` 使用 `https://gh-proxy.com/https://github.com/...`；默认直接 GitHub。
-`--source <本地工作树>` 从本地目录测试尚未发布的 manifest。
-安装 0KAY 时可选端口（写入 `runtime-env.json`，`0kay-pm start` 生效）：
-`--core-port <n>` Core HTTP 端口（默认 8080，同时作为各模块连接地址）；
-`--core-grpc-port <n>` Core gRPC 端口（默认 50051）；`--webui-port <n>` WebUI 端口（默认 3000）。
-配对远端 Core 时连接地址以配对结果为准，端口选项只改本机监听。
-安装在临时目录构建，成功后原子移动，不覆盖现有目录。命令来自仓库 manifest，安装可信仓库。
-manifest.schema=1；name/version 必填；install/start 为 argv 数组；modules 为子 manifest 路径；dependencies 为包名；requires 为运行时插件依赖。
-可选 `ui`：`{ dir?, plugin?, dist?, build? }` — install 末尾在 `dir` 执行 `build` argv，将 `dist`（默认 `dist`）原子发布到 `${CORE_DATA_DIR||data}/plugin-ui/{plugin||包短名}/`。
+Every install downloads the `main` branch by default. Pin a published release
+by appending `@version` to the package (or passing `--version`); the release
+tag `v<version>` is fetched from GitHub:
 
-主仓库与独立 Agent 仓库均须提交这些 manifest 后，GitHub 安装才能获得新版。
-当前 CLI 不提供运行时自动安装 Node/Go/Python、跨网段发现、公网部署或自动升级覆盖。
+```powershell
+0kay-pm install @razuresoft/0kay@0.1.0
+0kay-pm update @razuresoft/0kay@0.1.0   # pin back to a release
+0kay-pm update @razuresoft/0kay          # latest main branch
+```
+
+`update` rebuilds the package into a staging directory and swaps it in
+atomically; the configured `runtime-env.json` (ports, pairing) is carried over.
+Standard component `data` directories are preserved. The previous installation
+is retained alongside the new one as an `.old-<id>` recovery copy. Stop the
+component before updating; restart it after the update completes.
+The installed version comes from the package `manifest.json`.
+
+## Ports
+
+Installing `@razuresoft/0kay`, `@razuresoft/0kay-core` or
+`@razuresoft/0kay-webui` on an interactive terminal asks for the Core HTTP port
+(8080), Core gRPC port (50051) and WebUI port (3000). Answers are written to
+`runtime-env.json` and applied by `0kay-pm start`.
+
+Scripts can pass the flags instead — the flags skip the prompts for that port:
+
+```powershell
+0kay-pm install @razuresoft/0kay --no-pair --core-port 18080 --webui-port 3300
+```
+
+When pairing with a remote Core, connection addresses come from pairing; port
+flags then only change the local listeners.
+
+## Discovery and pairing
+
+Every install starts with a UDP LAN scan that refreshes the Core history in
+`~/.0kay/state.json`. Choose a Core and confirm pairing, then approve the same
+code under Core → Settings → Devices. Without a discovered Core the install
+still proceeds; re-install or restart to configure the connection later.
+`--no-pair` skips the pairing prompts (the scan still runs).
+`--advertise <LAN-IP>` selects the callback interface when detection fails;
+cross-subnet discovery depends on your router/firewall.
+
+`--proxy` fetches through `https://gh-proxy.com/https://github.com/...`;
+otherwise GitHub is contacted directly.
+`--source <local-tree>` installs from a local working tree to test unpublished
+manifests. Builds run in a temporary directory and are promoted atomically;
+existing installations are never overwritten outside of `update`. Commands come
+from the repository manifests — only install from repositories you trust.
+
+## Manifest rules
+
+`manifest.schema=1`; `name`/`version` are required; `install`/`start` are argv
+arrays; `modules` lists child manifest paths that are built during install
+(child `ui` blocks publish plugin UI bundles too); `dependencies` are package
+names; `requires` lists runtime plugin dependencies.
+Optional `ui`: `{ dir?, plugin?, dist?, build? }` — runs `build` in `dir` at the
+end of install and atomically publishes `dist` (default `dist`) to
+`${CORE_DATA_DIR||data}/plugin-ui/{plugin||package short name}/`.
+
+Commit the manifests in the umbrella and standalone Agent repositories before a
+GitHub install can pick up new versions.
+The current CLI does not install Node/Go/Python runtimes, does not cross
+subnets, does not deploy to the public internet, and does not auto-upgrade
+itself.
