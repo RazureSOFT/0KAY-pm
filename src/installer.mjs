@@ -134,9 +134,9 @@ export async function resolveCommand(command,cwd,home){
   executable=path.resolve(cwd||'.',executable)
  }else{
   const extra=home?await toolchainBinDirs(home):[]
-  let found=findExecutable(executable,cwd,extra)
-  if(!found)for(const fallback of EXECUTABLE_FALLBACKS[executable]||[]){if(findExecutable(fallback,cwd,extra)){executable=fallback;found=true;break}}
-  if(found)executable=found
+  let resolved=findExecutable(executable,cwd,extra)
+  if(!resolved)for(const fallback of EXECUTABLE_FALLBACKS[executable]||[]){const candidate=findExecutable(fallback,cwd,extra);if(candidate){resolved=candidate;break}}
+  if(resolved)executable=resolved
  }
  return [executable,...args]
 }

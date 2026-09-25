@@ -107,14 +107,20 @@ async function ensureLinger(ctx){
  if(!enabled.ok)ctx.log(`Could not enable linger; services start on login until you run: sudo loginctl enable-linger ${user}`)
 }
 async function installSystemd(units,ctx){
- const probe=await run('systemctl',['--user','daemon-reload'],{ignore:true})
+ const probe=await run('systemctl',['--user','show-environment'])
  if(!probe.ok)return {ok:false,error:probe.error||'systemctl --user unavailable'}
  const dir=systemdDir();await fs.mkdir(dir,{recursive:true})
  const prepared=await materialize(units,ctx)
+ for(const unit of prepared)await fs.writeFile(path.join(dir,`${unit.name}.service`),renderSystemdUnit(unit,unit.wrapper))
+ const reload=await run('systemctl',['--user','daemon-reload'])
+ if(!reload.ok)return {ok:false,error:reload.error}
  for(const unit of prepared){
-  await fs.writeFile(path.join(dir,`${unit.name}.service`),renderSystemdUnit(unit,unit.wrapper))
   const enabled=await run('systemctl',['--user','enable','--now',`${unit.name}.service`])
-  if(!enabled.ok)return {ok:false,error:enabled.error}
+  if(!enabled.ok){
+   // Undo the units enabled so far so the detached fallback has no duplicates.
+   for(const done of prepared)await run('systemctl',['--user','disable','--now',`${done.name}.service`],{ignore:true})
+   return {ok:false,error:enabled.error}
+  }
  }
  await ensureLinger(ctx)
  return {ok:true}
