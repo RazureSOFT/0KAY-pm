@@ -5,6 +5,7 @@ import path from 'node:path'
 import readline from 'node:readline/promises'
 import {discover,pinnedRequest} from '../src/discovery.mjs'
 import {installPackage,run,validateManifest,within} from '../src/installer.mjs'
+import {parsePort,portEnv} from '../src/env.mjs'
 
 const args=process.argv.slice(2)
 if(args[0]?.startsWith('install@'))args.splice(0,1,'install',args[0].slice(7))
@@ -37,9 +38,10 @@ async function configure(record,core){
  const env={}
  if(core){const interfaces=Object.values(os.networkInterfaces()).flat().filter(value=>value&&value.family==='IPv4'&&!value.internal);const address=flag('--advertise')||interfaces.find(value=>value.address.split('.').slice(0,3).join('.')===core.host.split('.').slice(0,3).join('.'))?.address
   if(!address)throw new Error('Cannot determine callback address; pass --advertise <LAN-IP>')
-  Object.assign(env,{CORE_ADDRESS:`${core.host}:${core.grpc_port}`,CORE_HTTP_ADDR:`https://${core.host}:${core.http_port}`,CORE_PAIR_TOKEN:core.token,CORE_TLS_CA:core.certificate,CORE_TLS_NAME:core.server_name,NODE_EXTRA_CA_CERTS:core.certificate,AGENT_ADDRESS:`${address}:50054`,AGENT_BIND_HOST:'0.0.0.0',MOCR_ADDRESS:`${core.host}:${core.grpc_port}`})
- }
- if(record.name==='@razuresoft/0kay'||record.name==='@razuresoft/0kay-core')env.CORE_LAN_ENABLED='1'
+   Object.assign(env,{CORE_ADDRESS:`${core.host}:${core.grpc_port}`,CORE_HTTP_ADDR:`https://${core.host}:${core.http_port}`,CORE_PAIR_TOKEN:core.token,CORE_TLS_CA:core.certificate,CORE_TLS_NAME:core.server_name,NODE_EXTRA_CA_CERTS:core.certificate,AGENT_ADDRESS:`${address}:50054`,AGENT_BIND_HOST:'0.0.0.0',MOCR_ADDRESS:`${core.host}:${core.grpc_port}`})
+  }
+  Object.assign(env,portEnv({http:parsePort('--core-port',flag('--core-port')),grpc:parsePort('--core-grpc-port',flag('--core-grpc-port')),webui:parsePort('--webui-port',flag('--webui-port'))},Boolean(core)))
+  if(record.name==='@razuresoft/0kay'||record.name==='@razuresoft/0kay-core')env.CORE_LAN_ENABLED='1'
  await fs.writeFile(path.join(record.repositoryRoot,'runtime-env.json'),JSON.stringify(env,null,2),{mode:0o600})
 }
 try{
@@ -61,6 +63,6 @@ try{
   else if(record.start)await run(record.start,record.cwd,env);else throw new Error('Package has no start command')
   break
  }
-  default:console.log('0kay-pm install <package> [--proxy] [--source <local-tree>] [--no-pair]\n0kay-pm discover\n0kay-pm cores\n0kay-pm start <package>')
+  default:console.log('0kay-pm install <package> [--proxy] [--source <local-tree>] [--no-pair] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm discover\n0kay-pm cores\n0kay-pm start <package>')
  }
 }catch(error){console.error(error.message);process.exitCode=1}

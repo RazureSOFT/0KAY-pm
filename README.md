@@ -29,6 +29,10 @@ npm install -g ./pm
 
 `--proxy` 使用 `https://gh-proxy.com/https://github.com/...`；默认直接 GitHub。
 `--source <本地工作树>` 从本地目录测试尚未发布的 manifest。
+安装 0KAY 时可选端口（写入 `runtime-env.json`，`0kay-pm start` 生效）：
+`--core-port <n>` Core HTTP 端口（默认 8080，同时作为各模块连接地址）；
+`--core-grpc-port <n>` Core gRPC 端口（默认 50051）；`--webui-port <n>` WebUI 端口（默认 3000）。
+配对远端 Core 时连接地址以配对结果为准，端口选项只改本机监听。
 安装在临时目录构建，成功后原子移动，不覆盖现有目录。命令来自仓库 manifest，安装可信仓库。
 manifest.schema=1；name/version 必填；install/start 为 argv 数组；modules 为子 manifest 路径；dependencies 为包名；requires 为运行时插件依赖。
 可选 `ui`：`{ dir?, plugin?, dist?, build? }` — install 末尾在 `dir` 执行 `build` argv，将 `dist`（默认 `dist`）原子发布到 `${CORE_DATA_DIR||data}/plugin-ui/{plugin||包短名}/`。
