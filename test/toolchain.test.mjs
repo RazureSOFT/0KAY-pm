@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import {platformInfo,toolchainFor,isKnownToolchain,binDirs,executablePath,parseShasums,goFilename,nodeFilename,selectGoRelease,requiredGoVersion,ensureToolchain} from '../src/toolchain.mjs'
+import {platformInfo,toolchainFor,isKnownToolchain,binDirs,executablePath,parseShasums,goFilename,nodeFilename,selectGoRelease,selectPythonAsset,requiredGoVersion,ensureToolchain} from '../src/toolchain.mjs'
 
 test('platformInfo maps runtime triplets for source archives',()=>{
  assert.deepEqual(platformInfo('linux','x64'),{platform:'linux',arch:'x64',goos:'linux',nodeOS:'linux',goArch:'amd64',nodeArch:'x64',triple:'x86_64-unknown-linux-gnu'})
@@ -53,6 +53,21 @@ test('selectGoRelease picks the exact patch or the newest same-minor patch',()=>
  assert.equal(selectGoRelease(releases,'1.27').version,'go1.27.1')
  assert.equal(selectGoRelease(releases,'1.28.0'),null)
  assert.equal(selectGoRelease([],'1.27.0'),null)
+})
+
+test('selectPythonAsset picks exact or newest same-minor build and ignores other triples',()=>{
+ const names=[
+  'cpython-3.12.14+20260924-x86_64-unknown-linux-gnu-install_only.tar.gz',
+  'cpython-3.12.7+20241016-x86_64-unknown-linux-gnu-install_only.tar.gz',
+  'cpython-3.12.14+20260924-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz',
+  'cpython-3.12.14+20260924-aarch64-unknown-linux-gnu-install_only.tar.gz',
+  'cpython-3.11.11+20260924-x86_64-unknown-linux-gnu-install_only.tar.gz',
+ ]
+ const triple='x86_64-unknown-linux-gnu'
+ assert.equal(selectPythonAsset(names,'3.12.7',triple),'cpython-3.12.7+20241016-x86_64-unknown-linux-gnu-install_only.tar.gz')
+ assert.equal(selectPythonAsset(names,'3.12.3',triple),'cpython-3.12.14+20260924-x86_64-unknown-linux-gnu-install_only.tar.gz')
+ assert.equal(selectPythonAsset(names,'3.13.0',triple),null)
+ assert.equal(selectPythonAsset([],'3.12.7',triple),null)
 })
 
 test('requiredGoVersion reads go.mod and the toolchain directive',async()=>{

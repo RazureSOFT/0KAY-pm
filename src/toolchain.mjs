@@ -71,9 +71,9 @@ export function goFilename(version,info){
  const ext=info.goos==='windows'?'zip':'tar.gz'
  return `go${version}.${info.goos}-${info.goArch}.${ext}`
 }
-function compareGoVersions(a,b){
- const pa=a.replace(/^go/,'').split('.').map(Number)
- const pb=b.replace(/^go/,'').split('.').map(Number)
+function compareVersions(a,b){
+ const pa=String(a).replace(/^go/,'').split('.').map(Number)
+ const pb=String(b).replace(/^go/,'').split('.').map(Number)
  for(let index=0;index<Math.max(pa.length,pb.length);index++){
   const left=pa[index]||0,right=pb[index]||0
   if(left!==right)return left-right
@@ -93,7 +93,25 @@ export function selectGoRelease(releases,version){
  if(major==null||minor==null)return null
  const patches=(releases||[]).filter(release=>new RegExp(`^go${major}\\.${minor}\\.\\d+$`).test(release.version))
  if(!patches.length)return null
- return patches.sort((a,b)=>compareGoVersions(a.version,b.version))[patches.length-1]
+ return patches.sort((a,b)=>compareVersions(a.version,b.version))[patches.length-1]
+}
+/**
+ * Choose a python-build-standalone asset for the requested version and target
+ * triple. Prefers the exact version, then the newest patch of the same
+ * major.minor that the current release still ships.
+ */
+export function selectPythonAsset(names,version,triple){
+ const target=String(triple).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')
+ const pattern=new RegExp(`^cpython-(\\d+\\.\\d+\\.\\d+)\\+.+-${target}-install_only\\.tar\\.gz$`)
+ const matches=(names||[]).map(name=>pattern.exec(name)).filter(Boolean)
+ if(!matches.length)return null
+ const exact=matches.find(match=>match[1]===version)
+ if(exact)return exact.input
+ const [major,minor]=version.split('.')
+ const same=(matches||[]).filter(match=>match[1].startsWith(`${major}.${minor}.`))
+ if(!same.length)return null
+ same.sort((a,b)=>compareVersions(a[1],b[1]))
+ return same[same.length-1].input
 }
 export function nodeFilename(version,info){
  const ext=info.nodeOS==='win'?'zip':'tar.gz'
@@ -136,13 +154,13 @@ async function nodeAsset(version,info,agent){
 async function pythonAsset(version,info,agent){
  const headers={'user-agent':'0kay-pm','accept':'application/vnd.github+json'}
  const release=JSON.parse((await downloadOnce('https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest',5,agent,headers)).toString('utf8'))
- const suffix=`-${info.triple}-install_only.tar.gz`
- const asset=(release.assets||[]).find(entry=>entry.name.startsWith(`cpython-${version}`)&&entry.name.endsWith(suffix))
- if(!asset)throw new Error(`No python-build-standalone asset for ${version} ${info.triple}`)
- const shaAsset=(release.assets||[]).find(entry=>entry.name===`${asset.name}.sha256`)
+ const name=selectPythonAsset((release.assets||[]).map(entry=>entry.name),version,info.triple)
+ if(!name)throw new Error(`No python-build-standalone asset for ${version} ${info.triple}`)
+ const asset=(release.assets||[]).find(entry=>entry.name===name)
+ const shaAsset=(release.assets||[]).find(entry=>entry.name===`${name}.sha256`)
  let sha256=null
  if(shaAsset){const body=(await downloadOnce(shaAsset.browser_download_url,5,agent,headers)).toString('utf8');sha256=(/^[0-9a-f]{64}/.exec(body.trim())||[])[0]||null}
- return {filename:asset.name,url:asset.browser_download_url,sha256,archive:'tar.gz'}
+ return {filename:name,url:asset.browser_download_url,sha256,archive:'tar.gz'}
 }
 function runFile(file,args){
  return new Promise((resolve,reject)=>{execFile(file,args,{windowsHide:true},error=>error?reject(error):resolve())})
