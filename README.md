@@ -58,16 +58,33 @@ tag `v<version>` is fetched from GitHub:
 atomically; the configured `runtime-env.json` (ports, pairing) is carried over.
 Standard component `data` directories are preserved. The previous installation
 is retained alongside the new one as an `.old-<id>` recovery copy. Stop the
-component before updating; restart it after the update completes.
+package before updating and start it again afterwards (`0kay-pm stop <package>`
+then `0kay-pm start <package>`).
 The installed version comes from the package `manifest.json`.
 
-## Ports
+## Services
 
-After a successful `install`, 0kay-pm automatically runs the package's manifest
-start command. Installing the full platform starts all runnable modules together;
-library and UI-only modules are skipped. Services run in the current terminal
-with their logs visible; press Ctrl+C to stop them. No browser is opened.
-Use `0kay-pm start <package>` to start the installation again later.
+After a successful `install`, 0kay-pm starts each runnable module as a
+long-lived **service** rather than a terminal child: systemd user units on
+Linux, LaunchAgents on macOS, logon tasks on Windows, with a detached-process
+fallback. Services restart on failure, keep running after the terminal or login
+session ends, and start again on boot. Only `0kay-pm stop <package>` shuts them
+down (it also disables autostart). Library and UI-only modules are skipped.
+
+On Linux, boot-time start needs lingering enabled; 0kay-pm tries automatically
+and otherwise prints `sudo loginctl enable-linger <user>`.
+
+```
+0kay-pm start <package>     # (re)register + start services
+0kay-pm status <package>    # backend state per service
+0kay-pm stop <package>      # stop services and disable autostart
+0kay-pm start <package> --foreground   # run in this terminal instead
+```
+
+Logs go to the service manager (e.g. `journalctl --user -u 0kay-core`) and, for
+the detached fallback, to `~/.0kay/logs/<service>.log`. No browser is opened.
+
+## Ports
 
 Installing `@razuresoft/0kay`, `@razuresoft/0kay-core` or
 `@razuresoft/0kay-webui` on an interactive terminal asks for the Core HTTP port

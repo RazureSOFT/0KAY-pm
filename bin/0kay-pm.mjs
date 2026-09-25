@@ -4,8 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline/promises'
 import {discover,pinnedRequest} from '../src/discovery.mjs'
-import {installPackage,run,validateManifest,within,configureToolchains} from '../src/installer.mjs'
+import {installPackage,run,validateManifest,within,configureToolchains,resolveCommand} from '../src/installer.mjs'
 import {proxyAgentFor} from '../src/download.mjs'
+import {toolchainBinDirs} from '../src/toolchain.mjs'
+import {installServices,stopServices,servicesStatus} from '../src/service.mjs'
 import {parsePort,portEnv,bindEnv} from '../src/env.mjs'
 
 const args=process.argv.slice(2)
@@ -94,19 +96,53 @@ async function configure(record,core,choices){
   if(record.name==='@razuresoft/0kay'||record.name==='@razuresoft/0kay-core')env.CORE_LAN_ENABLED='1'
  await fs.writeFile(path.join(record.repositoryRoot,'runtime-env.json'),JSON.stringify(env,null,2),{mode:0o600})
 }
-async function startInstalled(record){
- const env=JSON.parse(await fs.readFile(path.join(record.repositoryRoot,'runtime-env.json'),'utf8'))
- const commands=[]
- if(record.modules.length){
+/** One service per runnable module (or the package itself), named 0kay-<short>. */
+async function packageUnits(record,env,{resolve=false}={}){
+ const specs=[]
+ const short=name=>name.split('/')[1].replace(/^0kay-/,'')
+ if((record.modules||[]).length){
   for(const relative of record.modules){
-   const manifestPath=within(record.repositoryRoot,relative)
-   const manifest=validateManifest(JSON.parse(await fs.readFile(manifestPath,'utf8')))
-   if(manifest.start)commands.push({command:manifest.start,cwd:path.dirname(manifestPath)})
+   try{
+    const manifestPath=within(record.repositoryRoot,relative)
+    const manifest=validateManifest(JSON.parse(await fs.readFile(manifestPath,'utf8')))
+    if(manifest.start)specs.push({name:`0kay-${short(manifest.name)}`,command:manifest.start,cwd:path.dirname(manifestPath)})
+   }catch{/* module removed or unreadable */}
   }
- }else if(record.start)commands.push({command:record.start,cwd:record.cwd})
- if(!commands.length){console.log('Library/UI package; no standalone process.');return}
- console.log(`Starting ${record.name}. Services run in this terminal; press Ctrl+C to stop.`)
- await Promise.all(commands.map(({command,cwd})=>run(command,cwd,env)))
+ }else if(record.start)specs.push({name:`0kay-${short(record.name)}`,command:record.start,cwd:record.cwd})
+ const binDirs=await toolchainBinDirs(home)
+ const units=[]
+ for(const spec of specs)units.push({name:spec.name,command:resolve?await resolveCommand(spec.command,spec.cwd,home):spec.command,cwd:spec.cwd,env:env||{},binDirs})
+ return units
+}
+/** Install/start daemonized services that survive the terminal and boot later. */
+async function startServices(record){
+ const env=JSON.parse(await fs.readFile(path.join(record.repositoryRoot,'runtime-env.json'),'utf8'))
+ const units=await packageUnits(record,env,{resolve:true})
+ if(!units.length){console.log('Library/UI package; no service to start.');return}
+ const {backend}=await installServices({home,units})
+ console.log(`Started ${units.map(unit=>unit.name).join(', ')} via ${backend}. They keep running after this session ends and start on boot.`)
+ console.log(`Stop with: 0kay-pm stop ${record.name}`)
+}
+/** Stop and disable every service owned by a package. */
+async function stopPackage(name){
+ const record=state.installed[name];if(!record)throw new Error(`${name} is not installed`)
+ const units=await packageUnits(record,null)
+ await stopServices({home,names:units.map(unit=>unit.name)})
+ console.log(`Stopped ${units.map(unit=>unit.name).join(', ')||'(no services)'}.`)
+}
+async function printStatus(name){
+ const record=state.installed[name];if(!record)throw new Error(`${name} is not installed`)
+ const units=await packageUnits(record,null)
+ const rows=await servicesStatus({home,names:units.map(unit=>unit.name)})
+ for(const row of rows)console.log(`${row.name}\t${row.state}`)
+}
+/** Run in the terminal (blocking); only with --foreground for debugging. */
+async function startForeground(record){
+ const env=JSON.parse(await fs.readFile(path.join(record.repositoryRoot,'runtime-env.json'),'utf8'))
+ const units=await packageUnits(record,env)
+ if(!units.length){console.log('Library/UI package; no standalone process.');return}
+ console.log(`Starting ${record.name} in this terminal; press Ctrl+C to stop.`)
+ await Promise.all(units.map(unit=>run(unit.command,unit.cwd,env)))
 }
 try{
  switch(args[0]){
@@ -120,7 +156,7 @@ try{
   console.log(`Installing ${target.name}${target.version?`@${target.version}`:''}. Package manifests run build/install commands from the selected repository.`)
   const record=await installPackage(target.name,{home,source:flag('--source'),proxy:proxyMirror,proxyUrl,tag:target.version?`v${target.version}`:null,coreData:coreDataRoot()},state)
    await configure(record,core,choices);await save();console.log(`Installed ${record.name}@${record.version}.`)
-   await startInstalled(record);break
+   if(args.includes('--foreground'))await startForeground(record);else await startServices(record);break
  }
  case 'update':{
   const target=parseTarget(args[1]);if(!target.name)throw new Error('Usage: 0kay-pm update <package>[@version] [--proxy] [--source <local-tree>]')
@@ -131,9 +167,17 @@ try{
  }
  case 'start':{
   const record=state.installed[args[1]];if(!record)throw new Error('Package not installed')
-   await startInstalled(record)
+   if(args.includes('--foreground'))await startForeground(record);else await startServices(record)
   break
  }
-  default:console.log('0kay-pm install <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-pair] [--no-toolchain-download] [--expose | --bind-host <addr> | --no-expose] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-toolchain-download]\n0kay-pm discover\n0kay-pm cores\n0kay-pm start <package>\nPorts are asked interactively on install; the flags override for scripts.\n--proxy alone downloads via the gh-proxy.com mirror; with host:port or a URL it tunnels through that HTTP proxy. HTTPS_PROXY is honored too.\nMissing go/node/python build toolchains are downloaded to ~/.0kay/toolchains; --no-toolchain-download disables that.\nCore/WebUI installs ask whether to listen on 0.0.0.0; --expose enables it, --bind-host <addr> overrides, --no-expose skips the prompt.')
+ case 'stop':{
+  const name=args[1];if(!name)throw new Error('Usage: 0kay-pm stop <package>')
+  await stopPackage(name);break
+ }
+ case 'status':{
+  const name=args[1];if(!name)throw new Error('Usage: 0kay-pm status <package>')
+  await printStatus(name);break
+ }
+  default:console.log('0kay-pm install <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-pair] [--no-toolchain-download] [--expose | --bind-host <addr> | --no-expose] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-toolchain-download]\n0kay-pm start <package> [--foreground]\n0kay-pm stop <package>\n0kay-pm status <package>\n0kay-pm discover\n0kay-pm cores\nInstall/start register services that keep running after the session ends and start on boot; only `stop` shuts them down. --foreground runs in this terminal instead.\nPorts are asked interactively on install; the flags override for scripts.\n--proxy alone downloads via the gh-proxy.com mirror; with host:port or a URL it tunnels through that HTTP proxy. HTTPS_PROXY is honored too.\nMissing go/node/python build toolchains are downloaded to ~/.0kay/toolchains; --no-toolchain-download disables that.\nCore/WebUI installs ask whether to listen on 0.0.0.0; --expose enables it, --bind-host <addr> overrides, --no-expose skips the prompt.')
  }
 }catch(error){console.error(error.message);process.exitCode=1}

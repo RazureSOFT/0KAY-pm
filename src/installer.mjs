@@ -127,6 +127,19 @@ export async function run(command,cwd,env={}){
  const child=spawn(executable,args,{cwd,env:{...process.env,...proxyEnv,...env,PATH:pathValue,GOTOOLCHAIN:process.env.GOTOOLCHAIN||'auto'},stdio:'inherit',shell})
  return await new Promise((resolve,reject)=>{child.on('error',reject);child.on('exit',code=>code===0?resolve():reject(new Error(`${executable} exited ${code}`)))})
 }
+/** Resolve a manifest command to absolute paths (for a service unit; no download). */
+export async function resolveCommand(command,cwd,home){
+ let [executable,...args]=command
+ if(executable.includes('/')||executable.includes('\\')){
+  executable=path.resolve(cwd||'.',executable)
+ }else{
+  const extra=home?await toolchainBinDirs(home):[]
+  let found=findExecutable(executable,cwd,extra)
+  if(!found)for(const fallback of EXECUTABLE_FALLBACKS[executable]||[]){if(findExecutable(fallback,cwd,extra)){executable=fallback;found=true;break}}
+  if(found)executable=found
+ }
+ return [executable,...args]
+}
 export async function installPackage(name,options,state,stack=[]) {
  if(stack.includes(name))throw new Error(`Dependency cycle: ${[...stack,name].join(' -> ')}`)
  if(state.installed[name]&&!options.reinstall)return state.installed[name]
