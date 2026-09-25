@@ -4,7 +4,8 @@ import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline/promises'
 import {discover,pinnedRequest} from '../src/discovery.mjs'
-import {installPackage,run,validateManifest,within} from '../src/installer.mjs'
+import {installPackage,run,validateManifest,within,configureToolchains} from '../src/installer.mjs'
+import {proxyAgentFor} from '../src/download.mjs'
 import {parsePort,portEnv} from '../src/env.mjs'
 
 const args=process.argv.slice(2)
@@ -30,6 +31,12 @@ const coreDataRoot=()=>path.join(state.installed['@razuresoft/0kay']?.repository
 const proxyValue=flag('--proxy')
 const proxyUrl=proxyValue&&!proxyValue.startsWith('--')&&/[:/]/.test(proxyValue)?proxyValue:null
 const proxyMirror=args.includes('--proxy')&&!proxyUrl
+// Missing build toolchains (go/node/python) are downloaded into ~/.0kay/toolchains
+// by default. --no-toolchain-download or OKAY_TOOLCHAIN_DOWNLOAD=0 disables it.
+const allowToolchainDownload=!args.includes('--no-toolchain-download')&&process.env.OKAY_TOOLCHAIN_DOWNLOAD!=='0'
+let toolchainAgent=null
+try{toolchainAgent=proxyAgentFor({proxyUrl})}catch{toolchainAgent=null}
+configureToolchains({home,allowDownload:allowToolchainDownload,agent:toolchainAgent})
 const askPort=async(label,def)=>{while(true){const raw=await ask(`${label} [${def}]: `);if(!raw)return def;try{return parsePort(label,raw)}catch(error){console.log(error.message)}}}
 /** Ports are asked interactively during install; flags override for scripts. */
 async function portChoices(name){
@@ -113,6 +120,6 @@ try{
    await startInstalled(record)
   break
  }
-  default:console.log('0kay-pm install <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-pair] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy [host:port]] [--source <local-tree>]\n0kay-pm discover\n0kay-pm cores\n0kay-pm start <package>\nPorts are asked interactively on install; the flags override for scripts.\n--proxy alone downloads via the gh-proxy.com mirror; with host:port or a URL it tunnels through that HTTP proxy. HTTPS_PROXY is honored too.')
+  default:console.log('0kay-pm install <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-pair] [--no-toolchain-download] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-toolchain-download]\n0kay-pm discover\n0kay-pm cores\n0kay-pm start <package>\nPorts are asked interactively on install; the flags override for scripts.\n--proxy alone downloads via the gh-proxy.com mirror; with host:port or a URL it tunnels through that HTTP proxy. HTTPS_PROXY is honored too.\nMissing go/node/python build toolchains are downloaded to ~/.0kay/toolchains; --no-toolchain-download disables that.')
  }
 }catch(error){console.error(error.message);process.exitCode=1}

@@ -2,8 +2,9 @@
 
 Fast package manager for the 0KAY platform. Install 0KAY and its plugins with
 Node.js 22+ only — **git is not required**. Sources are downloaded as GitHub
-`archive` tarballs (branch or release tag) and extracted in-process; each module
-additionally needs its Go/Python build toolchain.
+`archive` tarballs (branch or release tag) and extracted in-process; if a
+module's Go/Python build toolchain is missing, the matching runtime is
+downloaded into `~/.0kay/toolchains` automatically (see below).
 
 ## Install the CLI
 
@@ -24,6 +25,21 @@ npm install -g ./pm
 `0kay-pm install@razuresoft/0kay` is accepted as well. Once published to npm,
 `npx @razuresoft/0kay-pm install @razuresoft/0kay-agent` will work; the package
 has not been published yet.
+
+## Build toolchains
+
+Manifest build commands (`go build`, `python -m pip install`, `npm run build`)
+run with the system toolchains when present. When `go`, `node` or `python` is
+**missing**, 0kay-pm downloads an official, checksum-verified runtime into
+`~/.0kay/toolchains/<name>/<version>` and uses it for that command — no `sudo`
+and no system changes. Go versions are read from the package `go.mod` (falling
+back to a pinned default), and downloads honor `--proxy` / `HTTPS_PROXY` like
+repository fetches.
+
+Disable it with `--no-toolchain-download` (or `OKAY_TOOLCHAIN_DOWNLOAD=0`).
+Checksum verification fails closed; override only when a publisher does not
+provide checksums with `OKAY_TOOLCHAIN_INSECURE=1`. Pin versions with
+`OKAY_GO_VERSION`, `OKAY_NODE_VERSION` and `OKAY_PYTHON_VERSION`.
 
 ## Releases and versions
 
@@ -101,6 +117,5 @@ end of install and atomically publishes `dist` (default `dist`) to
 
 Commit the manifests in the umbrella and standalone Agent repositories before a
 GitHub install can pick up new versions.
-The current CLI does not install Node/Go/Python runtimes, does not cross
-subnets, does not deploy to the public internet, and does not auto-upgrade
-itself.
+The current CLI does not cross subnets, does not deploy to the public internet,
+and does not auto-upgrade itself.

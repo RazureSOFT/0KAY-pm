@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
+import {existsSync} from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import zlib from 'node:zlib'
@@ -86,4 +87,26 @@ test('resolveProxy reads standard proxy environment variables',()=>{
  assert.equal(resolveProxy({https_proxy:'http://10.0.0.1:8080'}).hostname,'10.0.0.1')
  assert.equal(resolveProxy({HTTP_PROXY:'http://proxy:8080'}).port,'8080')
  assert.equal(resolveProxy({ALL_PROXY:'http://all:3128'}).port,'3128')
+})
+function symlinkEntry(name,target){
+ const buffer=header(name,0,'2')
+ buffer.write(target.slice(0,100),157,'utf8')
+ return buffer
+}
+test('extractTarGz materializes symlinks only when requested and rejects escapes',async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'0kay-pm-tar-link-'))
+ try{
+  const tar=Buffer.concat([
+   entry('pkg-main/','','5'),
+   entry('pkg-main/real.txt','real'),
+   symlinkEntry('pkg-main/link.txt','real.txt'),
+   symlinkEntry('pkg-main/escape.txt','../../outside.txt'),
+   Buffer.alloc(1024),
+  ])
+  extractTarGz(zlib.gzipSync(tar),root)
+  assert.equal(existsSync(path.join(root,'link.txt')),false,'links ignored by default')
+  extractTarGz(zlib.gzipSync(tar),root,{links:true})
+  assert.equal(await fs.readFile(path.join(root,'link.txt'),'utf8'),'real')
+  assert.equal(existsSync(path.join(root,'escape.txt')),false,'escaping links are skipped')
+ }finally{await fs.rm(root,{recursive:true,force:true})}
 })
