@@ -69,6 +69,20 @@ async function configure(record,core,choices){
   if(record.name==='@razuresoft/0kay'||record.name==='@razuresoft/0kay-core')env.CORE_LAN_ENABLED='1'
  await fs.writeFile(path.join(record.repositoryRoot,'runtime-env.json'),JSON.stringify(env,null,2),{mode:0o600})
 }
+async function startInstalled(record){
+ const env=JSON.parse(await fs.readFile(path.join(record.repositoryRoot,'runtime-env.json'),'utf8'))
+ const commands=[]
+ if(record.modules.length){
+  for(const relative of record.modules){
+   const manifestPath=within(record.repositoryRoot,relative)
+   const manifest=validateManifest(JSON.parse(await fs.readFile(manifestPath,'utf8')))
+   if(manifest.start)commands.push({command:manifest.start,cwd:path.dirname(manifestPath)})
+  }
+ }else if(record.start)commands.push({command:record.start,cwd:record.cwd})
+ if(!commands.length){console.log('Library/UI package; no standalone process.');return}
+ console.log(`Starting ${record.name}. Services run in this terminal; press Ctrl+C to stop.`)
+ await Promise.all(commands.map(({command,cwd})=>run(command,cwd,env)))
+}
 try{
  switch(args[0]){
  case 'discover':console.log(JSON.stringify(await scan(),null,2));break
@@ -80,7 +94,8 @@ try{
   const choices=await portChoices(target.name)
   console.log(`Installing ${target.name}${target.version?`@${target.version}`:''}. Package manifests run build/install commands from the selected repository.`)
   const record=await installPackage(target.name,{home,source:flag('--source'),proxy:args.includes('--proxy'),tag:target.version?`v${target.version}`:null,coreData:coreDataRoot()},state)
-  await configure(record,core,choices);await save();console.log(`Installed ${record.name}@${record.version}.${record.start||record.modules.length?` Start: 0kay-pm start ${record.name}`:' Library package; no standalone process.'}`);break
+   await configure(record,core,choices);await save();console.log(`Installed ${record.name}@${record.version}.`)
+   await startInstalled(record);break
  }
  case 'update':{
   const target=parseTarget(args[1]);if(!target.name)throw new Error('Usage: 0kay-pm update <package>[@version] [--proxy] [--source <local-tree>]')
@@ -91,9 +106,7 @@ try{
  }
  case 'start':{
   const record=state.installed[args[1]];if(!record)throw new Error('Package not installed')
-  const env=JSON.parse(await fs.readFile(path.join(record.repositoryRoot,'runtime-env.json'),'utf8'))
-  if(record.modules.length){await Promise.all(record.modules.map(async relative=>{const manifestPath=within(record.repositoryRoot,relative);const manifest=validateManifest(JSON.parse(await fs.readFile(manifestPath,'utf8')));if(manifest.start)await run(manifest.start,path.dirname(manifestPath),env)}))}
-  else if(record.start)await run(record.start,record.cwd,env);else throw new Error('Package has no start command')
+   await startInstalled(record)
   break
  }
   default:console.log('0kay-pm install <package>[@version] [--proxy] [--source <local-tree>] [--no-pair] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy] [--source <local-tree>]\n0kay-pm discover\n0kay-pm cores\n0kay-pm start <package>\nPorts are asked interactively on install; the flags override for scripts.')

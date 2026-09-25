@@ -46,6 +46,12 @@ The installed version comes from the package `manifest.json`.
 
 ## Ports
 
+After a successful `install`, 0kay-pm automatically runs the package's manifest
+start command. Installing the full platform starts all runnable modules together;
+library and UI-only modules are skipped. Services run in the current terminal
+with their logs visible; press Ctrl+C to stop them. No browser is opened.
+Use `0kay-pm start <package>` to start the installation again later.
+
 Installing `@razuresoft/0kay`, `@razuresoft/0kay-core` or
 `@razuresoft/0kay-webui` on an interactive terminal asks for the Core HTTP port
 (8080), Core gRPC port (50051) and WebUI port (3000). Answers are written to
