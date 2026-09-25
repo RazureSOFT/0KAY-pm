@@ -41,8 +41,11 @@ export function renderWindowsWrapper(unit,home){
  lines.push(unit.command.map(cmdQuote).join(' '))
  return lines.join('\r\n')+'\r\n'
 }
+/** systemd unit paths: escape % and spaces (WorkingDirectory= must be unquoted). */
+function systemdPath(value){
+ return String(value).replace(/%/g,'%%').replace(/ /g,'\\x20')
+}
 export function renderSystemdUnit(unit,wrapper){
- const escape=(value)=>String(value).replace(/%/g,'%%')
  return [
   '[Unit]',
   `Description=0kay-pm: ${unit.name}`,
@@ -51,8 +54,8 @@ export function renderSystemdUnit(unit,wrapper){
   '',
   '[Service]',
   'Type=simple',
-  `ExecStart=/bin/sh "${escape(wrapper)}"`,
-  `WorkingDirectory="${escape(unit.cwd)}"`,
+  `ExecStart=/bin/sh "${systemdPath(wrapper)}"`,
+  `WorkingDirectory=${systemdPath(unit.cwd)}`,
   'Restart=always',
   'RestartSec=3',
   'KillMode=mixed',

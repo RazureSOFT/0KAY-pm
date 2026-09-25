@@ -43,7 +43,7 @@ test('renderSystemdUnit is a restart-on-failure user service',()=>{
  assert.match(unit,/ExecStart=\/bin\/sh "\/home\/u\/\.0kay\/services\/0kay-life\.sh"/)
  assert.match(unit,/Restart=always/)
  assert.match(unit,/WantedBy=default\.target/)
- assert.match(unit,/WorkingDirectory="\/srv\/100%%\/life"/,'percent signs are escaped for systemd')
+ assert.match(unit,/WorkingDirectory=\/srv\/100%%\/life/,'percent signs are escaped and the path stays unquoted')
 })
 
 test('renderLaunchdPlist keeps the agent alive and logs output',()=>{
