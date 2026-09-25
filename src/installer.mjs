@@ -106,6 +106,16 @@ function environmentAgent(){
  if(!cachedAgent||cachedAgent.proxy.href!==proxy.href)cachedAgent=new ProxyTunnelAgent(proxy)
  return cachedAgent
 }
+/** Agent for an explicit --proxy address, otherwise the environment proxy. */
+function proxyAgentFor(options){
+ if(options.proxyUrl){
+  const raw=String(options.proxyUrl)
+  const url=resolveProxy({HTTPS_PROXY:raw.includes('://')?raw:`http://${raw}`})
+  if(!url)throw new Error(`Unsupported proxy address: ${options.proxyUrl}`)
+  return new ProxyTunnelAgent(url)
+ }
+ return environmentAgent()
+}
 /** One HTTPS GET with redirect following; resolves the full body buffer. */
 function downloadOnce(url,redirects=5,agent=null){
  return new Promise((resolve,reject)=>{
@@ -131,7 +141,7 @@ function downloadOnce(url,redirects=5,agent=null){
 export async function downloadArchive(repository,target,options={}){
  const archive=archiveUrl(repository,'main',options.tag||null)
  const url=options.proxy?`https://gh-proxy.com/${archive}`:archive
- const agent=environmentAgent()
+ const agent=proxyAgentFor(options)
  let lastError
  for(let attempt=1;attempt<=3;attempt++){
   try{
@@ -179,12 +189,28 @@ async function publishManifestUI(manifest,manifestDir,options){
  const pluginName=manifest.ui.plugin||manifest.name.split('/')[1]
  await publishPluginUI(dist,pluginName,options.coreData)
 }
+/** Locate an executable on PATH (or as a relative path) before spawning it. */
+function findExecutable(name,cwd){
+ if(name.includes('/')||name.includes('\\')){const candidate=path.resolve(cwd||'.',name);return existsSync(candidate)?candidate:null}
+ const extensions=process.platform==='win32'?(process.env.PATHEXT||'.EXE;.CMD;.BAT').split(';').filter(Boolean):['']
+ for(const directory of (process.env.PATH||'').split(path.delimiter).filter(Boolean)){
+  for(const extension of extensions){const candidate=path.join(directory,name+extension);if(existsSync(candidate))return candidate}
+ }
+ return null
+}
+/** python/python3 naming differs across platforms; try the sibling name. */
+const EXECUTABLE_FALLBACKS={python:['python3'],python3:['python']}
 export function run(command,cwd,env={}){return new Promise((resolve,reject)=>{
  let [executable,...args]=command
  // npm.cmd needs a shell on Windows; manifest arguments cannot inject shell operators.
  let shell=process.platform==='win32'&&['npm','npx'].includes(executable)
  if(shell){const cli=path.join(path.dirname(process.execPath),'node_modules','npm','bin',`${executable}-cli.js`);if(existsSync(cli)){args=[cli,...args];executable=process.execPath;shell=false}}
  if(shell&&args.some(arg=>/[&|<>^]/.test(arg)))throw new Error('Unsupported shell operator in npm arguments')
+ if(!shell){
+  let found=findExecutable(executable,cwd)
+  if(!found)for(const fallback of EXECUTABLE_FALLBACKS[executable]||[]){if(findExecutable(fallback,cwd)){executable=fallback;found=true;break}}
+  if(!found){reject(new Error(`Required command not found: ${executable}. Install it and add it to PATH, then retry.`));return}
+ }
  const child=spawn(executable,args,{cwd,env:{...process.env,...env},stdio:'inherit',shell})
  child.on('error',reject);child.on('exit',code=>code===0?resolve():reject(new Error(`${executable} exited ${code}`)))
 })}
@@ -193,7 +219,8 @@ export async function installPackage(name,options,state,stack=[]) {
  if(state.installed[name]&&!options.reinstall)return state.installed[name]
  const spec=packages[name];if(!spec)throw new Error(`Unknown package ${name}`)
  const destination=path.join(options.home,'packages',name.split('/')[1]);await fs.mkdir(path.dirname(destination),{recursive:true})
- if(!options.reinstall&&await fs.stat(destination).then(()=>true,()=>false))throw new Error(`Destination already exists: ${destination}; existing work is never overwritten`)
+ // A leftover directory without a state record means a previous install was
+ // interrupted; it is replaced below like an update, keeping data and env.
  const staging=destination+'.install-'+randomUUID();await fs.mkdir(staging,{recursive:true})
  try {
   if(options.source) await fs.cp(path.resolve(options.source),staging,{recursive:true,filter:source=>!['.git','node_modules','dist','data','__pycache__'].includes(path.basename(source))&&!source.endsWith('.log')&&!source.endsWith('.exe')})

@@ -26,6 +26,10 @@ function parseTarget(raw){
  return {name,version:version?version.replace(/^v/,''):null}
 }
 const coreDataRoot=()=>path.join(state.installed['@razuresoft/0kay']?.repositoryRoot||path.join(home,'packages','0kay'),'core','data')
+/** --proxy alone mirrors via gh-proxy.com; --proxy host:port tunnels through that proxy. */
+const proxyValue=flag('--proxy')
+const proxyUrl=proxyValue&&!proxyValue.startsWith('--')&&/[:/]/.test(proxyValue)?proxyValue:null
+const proxyMirror=args.includes('--proxy')&&!proxyUrl
 const askPort=async(label,def)=>{while(true){const raw=await ask(`${label} [${def}]: `);if(!raw)return def;try{return parsePort(label,raw)}catch(error){console.log(error.message)}}}
 /** Ports are asked interactively during install; flags override for scripts. */
 async function portChoices(name){
@@ -93,7 +97,7 @@ try{
   const core=args.includes('--no-pair')?null:await pair(cores)
   const choices=await portChoices(target.name)
   console.log(`Installing ${target.name}${target.version?`@${target.version}`:''}. Package manifests run build/install commands from the selected repository.`)
-  const record=await installPackage(target.name,{home,source:flag('--source'),proxy:args.includes('--proxy'),tag:target.version?`v${target.version}`:null,coreData:coreDataRoot()},state)
+  const record=await installPackage(target.name,{home,source:flag('--source'),proxy:proxyMirror,proxyUrl,tag:target.version?`v${target.version}`:null,coreData:coreDataRoot()},state)
    await configure(record,core,choices);await save();console.log(`Installed ${record.name}@${record.version}.`)
    await startInstalled(record);break
  }
@@ -101,7 +105,7 @@ try{
   const target=parseTarget(args[1]);if(!target.name)throw new Error('Usage: 0kay-pm update <package>[@version] [--proxy] [--source <local-tree>]')
   if(!state.installed[target.name])throw new Error(`${target.name} is not installed`)
   console.log(`Updating ${target.name}${target.version?`@${target.version}`:' to the latest main branch'}.`)
-  const record=await installPackage(target.name,{home,source:flag('--source'),proxy:args.includes('--proxy'),reinstall:true,tag:target.version?`v${target.version}`:null,coreData:coreDataRoot()},state)
+  const record=await installPackage(target.name,{home,source:flag('--source'),proxy:proxyMirror,proxyUrl,reinstall:true,tag:target.version?`v${target.version}`:null,coreData:coreDataRoot()},state)
   await save();console.log(`Updated ${record.name}@${record.version}. Start: 0kay-pm start ${record.name}`);break
  }
  case 'start':{
@@ -109,6 +113,6 @@ try{
    await startInstalled(record)
   break
  }
-  default:console.log('0kay-pm install <package>[@version] [--proxy] [--source <local-tree>] [--no-pair] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy] [--source <local-tree>]\n0kay-pm discover\n0kay-pm cores\n0kay-pm start <package>\nPorts are asked interactively on install; the flags override for scripts.')
+  default:console.log('0kay-pm install <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-pair] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy [host:port]] [--source <local-tree>]\n0kay-pm discover\n0kay-pm cores\n0kay-pm start <package>\nPorts are asked interactively on install; the flags override for scripts.\n--proxy alone downloads via the gh-proxy.com mirror; with host:port or a URL it tunnels through that HTTP proxy. HTTPS_PROXY is honored too.')
  }
 }catch(error){console.error(error.message);process.exitCode=1}

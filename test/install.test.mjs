@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import {installPackage,publishPluginUI} from '../src/installer.mjs'
+import {installPackage,publishPluginUI,run} from '../src/installer.mjs'
 test('local install executes manifest and rejects overwrite',async()=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'0kay-pm-test-'))
  try{
@@ -77,4 +77,23 @@ test('reinstall replaces the package, keeps runtime-env, and republishes module 
   assert.equal(entries.filter(entry=>entry.includes('.old-')).length,1,'previous installation retained for recovery')
   assert.equal(entries.filter(entry=>entry.includes('.install-')).length,0,'no staging directories remain')
  }finally{await fs.rm(root,{recursive:true,force:true})}
+})
+test('install recovers a leftover package directory from an interrupted run',async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'0kay-pm-leftover-'))
+ try{
+  const source=path.join(root,'source');await fs.mkdir(source)
+  await fs.writeFile(path.join(source,'manifest.json'),JSON.stringify({schema:1,name:'@razuresoft/0kay',version:'2.0.0',install:[]}))
+  const home=path.join(root,'home');const leftover=path.join(home,'packages','0kay')
+  await fs.mkdir(leftover,{recursive:true})
+  await fs.writeFile(path.join(leftover,'stale.txt'),'old')
+  const state={installed:{}}
+  const record=await installPackage('@razuresoft/0kay',{home,source},state)
+  assert.equal(record.version,'2.0.0')
+  assert.equal(await fs.stat(path.join(record.repositoryRoot,'stale.txt')).then(()=>true,()=>false),false)
+  const entries=await fs.readdir(path.join(home,'packages'))
+  assert.ok(entries.some(entry=>entry.includes('.old-')),'leftover kept as a recovery copy')
+ }finally{await fs.rm(root,{recursive:true,force:true})}
+})
+test('run reports a missing executable clearly',async()=>{
+ await assert.rejects(()=>run(['definitely-missing-command-0kay'],process.cwd()),/Required command not found: definitely-missing-command-0kay/)
 })

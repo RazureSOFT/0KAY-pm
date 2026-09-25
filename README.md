@@ -76,10 +76,11 @@ still proceeds; re-install or restart to configure the connection later.
 `--advertise <LAN-IP>` selects the callback interface when detection fails;
 cross-subnet discovery depends on your router/firewall.
 
-`--proxy` fetches through `https://gh-proxy.com/https://github.com/...`;
-otherwise GitHub is contacted directly and `HTTPS_PROXY`, `HTTP_PROXY` or
-`ALL_PROXY` (upper- or lowercase) is honored through an HTTP CONNECT tunnel.
-Set `HTTPS_PROXY=http://127.0.0.1:7890` when GitHub is unreachable directly.
+`--proxy` alone fetches through `https://gh-proxy.com/https://github.com/...`.
+`--proxy <host:port>` (or a full URL) tunnels downloads through that HTTP proxy.
+Without a flag, `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY` (upper- or lowercase)
+is honored through an HTTP CONNECT tunnel — set
+`HTTPS_PROXY=http://127.0.0.1:7890` when GitHub is unreachable directly.
 `--source <local-tree>` installs from a local working tree to test unpublished
 manifests. Builds run in a temporary directory and are promoted atomically;
 existing installations are never overwritten outside of `update`. Commands come
