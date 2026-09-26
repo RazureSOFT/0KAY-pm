@@ -18,6 +18,33 @@ export const packages={
  '@razuresoft/0kay-webui':{repository:'https://github.com/RazureSOFT/0KAY.git',manifest:'webui/manifest.json'},
  '@razuresoft/0kay-searxng':{repository:'https://github.com/RazureSOFT/0KAY.git',manifest:'searxng/manifest.json'},
 }
+/** npm registry used to resolve third-party packages (override with OKAY_NPM_REGISTRY). */
+const REGISTRY=process.env.OKAY_NPM_REGISTRY||'https://registry.npmjs.org'
+/** Normalize a package.json `repository` value to a GitHub https URL. */
+export function normalizeRepository(value){
+ const raw=typeof value==='string'?value:value&&value.url
+ if(!raw)return null
+ const url=String(raw).replace(/^git\+/,'').replace(/^git:\/\//,'https://').replace(/^ssh:\/\/git@/,'https://').replace(/^git@github\.com:/,'https://github.com/')
+ const match=/github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?\/?$/.exec(url)
+ return match?`https://github.com/${match[1]}/${match[2]}.git`:null
+}
+/**
+ * Resolve a package name to {repository, manifest}. First-party names use the
+ * built-in map. Other names resolve through the npm registry (`repository`
+ * field), then fall back to a GitHub `owner/repo` convention. `owner/repo`
+ * input (unscoped) is accepted directly.
+ */
+export async function resolveSpec(name){
+ if(packages[name])return packages[name]
+ if(name.includes('/')&&!name.startsWith('@'))return {repository:`https://github.com/${name}.git`,manifest:'manifest.json'}
+ try{
+  const response=await fetch(`${REGISTRY}/${name}`,{headers:{Accept:'application/json'},signal:AbortSignal.timeout(8000)})
+  if(response.ok){const data=await response.json();const repository=normalizeRepository(data.repository);if(repository)return {repository,manifest:'manifest.json'}}
+ }catch{ /* offline or unpublished → fall back to the GitHub convention */ }
+ const ownerRepo=name.replace(/^@/,'')
+ if(/^[^/]+\/[^/]+$/.test(ownerRepo))return {repository:`https://github.com/${ownerRepo}.git`,manifest:'manifest.json'}
+ return null
+}
 export function within(root,relative){const value=path.resolve(root,relative);if(value!==root&&!value.startsWith(root+path.sep))throw new Error('Manifest path escapes package');return value}
 /** GitHub repository URL → source archive URL. Fetches archives, never git. tag null selects the branch. */
 export function archiveUrl(repository,branch='main',tag=null){
@@ -46,7 +73,7 @@ export async function downloadArchive(repository,target,options={}){
  throw lastError
 }
 export function validateManifest(value){
- if(value.schema!==1||typeof value.name!=='string'||!/^@razuresoft\/[a-z0-9-]+$/.test(value.name)||typeof value.version!=='string')throw new Error('Invalid manifest identity/schema')
+ if(value.schema!==1||typeof value.name!=='string'||!/^(@[a-z0-9][a-z0-9-]*\/)?[a-z0-9][a-z0-9-]*$/.test(value.name)||typeof value.version!=='string')throw new Error('Invalid manifest identity/schema')
  for(const command of [...(value.install||[]),...(value.start?[value.start]:[]),...(value.ui?.build||[])])if(!Array.isArray(command)||!command.length||command.some(arg=>typeof arg!=='string'||/[\r\n\0]/.test(arg)))throw new Error('Manifest commands must be argument arrays')
  if(value.ui!=null){
   if(typeof value.ui!=='object'||value.ui===null||Array.isArray(value.ui))throw new Error('Manifest ui must be an object')
@@ -143,8 +170,11 @@ export async function resolveCommand(command,cwd,home){
 export async function installPackage(name,options,state,stack=[]) {
  if(stack.includes(name))throw new Error(`Dependency cycle: ${[...stack,name].join(' -> ')}`)
  if(state.installed[name]&&!options.reinstall)return state.installed[name]
- const spec=packages[name];if(!spec)throw new Error(`Unknown package ${name}`)
- const destination=path.join(options.home,'packages',name.split('/')[1]);await fs.mkdir(path.dirname(destination),{recursive:true})
+ const spec=options.source?(packages[name]||{repository:null,manifest:'manifest.json'}):await resolveSpec(name)
+ if(!spec)throw new Error(`Unknown package ${name}`)
+ // Scoped third-party packages keep their scope in the folder name to avoid collisions.
+ const folder=name.startsWith('@razuresoft/')?name.split('/')[1]:name.replace(/^@/,'').replace(/\//g,'-')
+ const destination=path.join(options.home,'packages',folder);await fs.mkdir(path.dirname(destination),{recursive:true})
  // A leftover directory without a state record means a previous install was
  // interrupted; it is replaced below like an update, keeping data and env.
  const staging=destination+'.install-'+randomUUID();await fs.mkdir(staging,{recursive:true})
