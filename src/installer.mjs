@@ -198,7 +198,16 @@ export async function installPackage(name,options,state,stack=[]) {
  // interrupted; it is replaced below like an update, keeping data and env.
  const staging=destination+'.install-'+randomUUID();await fs.mkdir(staging,{recursive:true})
  try {
-  if(options.source) await fs.cp(path.resolve(options.source),staging,{recursive:true,filter:source=>!['.git','node_modules','dist','data','__pycache__'].includes(path.basename(source))&&!source.endsWith('.log')&&!source.endsWith('.exe')})
+  if(options.source){const sourceRoot=path.resolve(options.source);await fs.cp(sourceRoot,staging,{recursive:true,filter:source=>{
+    const relative=path.relative(sourceRoot,source)
+    if(!relative)return true
+    const base=path.basename(source)
+    // Build/runtime junk is never source. `data` is only skipped at the package
+    // root; nested paths such as core/data/ui patches ship with the package.
+    if(['.git','node_modules','__pycache__','dist'].includes(base))return false
+    if(base==='data'&&!relative.includes(path.sep))return false
+    return !source.endsWith('.log')&&!source.endsWith('.exe')
+   }})}
    else {
     await downloadArchive(spec.repository,staging,options)
    }

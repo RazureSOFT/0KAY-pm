@@ -94,6 +94,21 @@ test('install recovers a leftover package directory from an interrupted run',asy
   assert.ok(entries.some(entry=>entry.includes('.old-')),'leftover kept as a recovery copy')
  }finally{await fs.rm(root,{recursive:true,force:true})}
 })
+test('source install publishes manifest patches and skips root runtime data',async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'0kay-pm-patch-'))
+ try{
+  const source=path.join(root,'source')
+  await fs.mkdir(path.join(source,'core','data','ui'),{recursive:true})
+  await fs.writeFile(path.join(source,'core','data','ui','demo.patch'),'{"id":"demo"}')
+  await fs.mkdir(path.join(source,'data'),{recursive:true})
+  await fs.writeFile(path.join(source,'data','runtime.db'),'runtime')
+  await fs.writeFile(path.join(source,'manifest.json'),JSON.stringify({schema:1,name:'@razuresoft/0kay',version:'1.0.0',install:[],patches:['core/data/ui/demo.patch']}))
+  const home=path.join(root,'home');const coreData=path.join(root,'coreData');const state={installed:{}}
+  const record=await installPackage('@razuresoft/0kay',{home,source,coreData},state)
+  assert.equal(await fs.readFile(path.join(coreData,'ui','demo.patch'),'utf8'),'{"id":"demo"}')
+  assert.equal(await fs.stat(path.join(record.repositoryRoot,'data','runtime.db')).then(()=>true,()=>false),false,'root runtime data excluded')
+ }finally{await fs.rm(root,{recursive:true,force:true})}
+})
 test('run reports a missing executable clearly',async()=>{
  await assert.rejects(()=>run(['definitely-missing-command-0kay'],process.cwd()),/Required command not found: definitely-missing-command-0kay/)
 })
