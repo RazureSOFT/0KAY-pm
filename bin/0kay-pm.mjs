@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline/promises'
 import {discover,pinnedRequest,expandTargets,localSubnets} from '../src/discovery.mjs'
-import {installPackage,run,validateManifest,within,configureToolchains,resolveCommand} from '../src/installer.mjs'
+import {installPackage,uninstallPackage,run,validateManifest,within,configureToolchains,resolveCommand} from '../src/installer.mjs'
 import {proxyAgentFor} from '../src/download.mjs'
 import {toolchainBinDirs} from '../src/toolchain.mjs'
 import {installServices,stopServices,servicesStatus} from '../src/service.mjs'
@@ -198,10 +198,19 @@ try{
   const name=args[1];if(!name)throw new Error('Usage: 0kay-pm stop <package>')
   await stopPackage(name);break
  }
+ case 'uninstall':{
+  const name=args[1];if(!name)throw new Error('Usage: 0kay-pm uninstall <package>')
+  if(!state.installed[name])throw new Error(`${name} is not installed`)
+  await stopPackage(name).catch(()=>{})
+  const result=await uninstallPackage(name,{home,coreData:coreDataRoot()},state)
+  await save()
+  console.log(`Uninstalled ${result.name}${result.removed.length?`; removed ${result.removed.join(', ')}`:''}${result.removedTree?'':'; kept source tree in place'}.`)
+  break
+ }
  case 'status':{
   const name=args[1];if(!name)throw new Error('Usage: 0kay-pm status <package>')
   await printStatus(name);break
  }
-  default:console.log('0kay-pm install <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-pair] [--no-toolchain-download] [--expose | --bind-host <addr> | --no-expose] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-toolchain-download]\n0kay-pm start <package> [--foreground]\n0kay-pm stop <package>\n0kay-pm status <package>\n0kay-pm discover [ip ...] [--host <ip>] [--subnet <cidr>] [--lan] [--timeout <ms>] [--max-hosts <n>]\n0kay-pm cores\nInstall/start register services that keep running after the session ends and start on boot; only `stop` shuts them down. --foreground runs in this terminal instead.\nPorts are asked interactively on install; the flags override for scripts.\n--proxy alone downloads via the gh-proxy.com mirror; with host:port or a URL it tunnels through that HTTP proxy. HTTPS_PROXY is honored too.\nThird-party packages resolve via the npm registry (repository field), else a GitHub owner/repo name; --source <local-tree> installs a local checkout of any package.\nMissing go/node/python build toolchains are downloaded to ~/.0kay/toolchains; --no-toolchain-download disables that.\nCore/WebUI installs ask whether to listen on 0.0.0.0; --expose enables it, --bind-host <addr> overrides, --no-expose skips the prompt.')
+  default:console.log('0kay-pm uninstall <package>\n0kay-pm install <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-pair] [--no-toolchain-download] [--expose | --bind-host <addr> | --no-expose] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-toolchain-download]\n0kay-pm start <package> [--foreground]\n0kay-pm stop <package>\n0kay-pm status <package>\n0kay-pm discover [ip ...] [--host <ip>] [--subnet <cidr>] [--lan] [--timeout <ms>] [--max-hosts <n>]\n0kay-pm cores\nInstall/start register services that keep running after the session ends and start on boot; only `stop` shuts them down. --foreground runs in this terminal instead.\nPorts are asked interactively on install; the flags override for scripts.\n--proxy alone downloads via the gh-proxy.com mirror; with host:port or a URL it tunnels through that HTTP proxy. HTTPS_PROXY is honored too.\nThird-party packages resolve via the npm registry (repository field), else a GitHub owner/repo name; --source <local-tree> installs a local checkout of any package.\nMissing go/node/python build toolchains are downloaded to ~/.0kay/toolchains; --no-toolchain-download disables that.\nCore/WebUI installs ask whether to listen on 0.0.0.0; --expose enables it, --bind-host <addr> overrides, --no-expose skips the prompt.')
  }
 }catch(error){console.error(error.message);process.exitCode=1}

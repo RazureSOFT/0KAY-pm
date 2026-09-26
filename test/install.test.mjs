@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import {installPackage,publishPluginUI,run} from '../src/installer.mjs'
+import {installPackage,uninstallPackage,publishPluginUI,run} from '../src/installer.mjs'
 test('local install executes manifest and rejects overwrite',async()=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'0kay-pm-test-'))
  try{
@@ -107,6 +107,42 @@ test('source install publishes manifest patches and skips root runtime data',asy
   const record=await installPackage('@razuresoft/0kay',{home,source,coreData},state)
   assert.equal(await fs.readFile(path.join(coreData,'ui','demo.patch'),'utf8'),'{"id":"demo"}')
   assert.equal(await fs.stat(path.join(record.repositoryRoot,'data','runtime.db')).then(()=>true,()=>false),false,'root runtime data excluded')
+ }finally{await fs.rm(root,{recursive:true,force:true})}
+})
+test('uninstall removes the package, plugin-ui and patches',async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'0kay-pm-remove-'))
+ try{
+  const source=path.join(root,'source')
+  await fs.mkdir(path.join(source,'core','data','ui'),{recursive:true})
+  await fs.writeFile(path.join(source,'core','data','ui','demo.patch'),'{"id":"demo"}')
+  await fs.writeFile(path.join(source,'manifest.json'),JSON.stringify({
+   schema:1,name:'@razuresoft/0kay-demo',version:'1.0.0',install:[],patches:['core/data/ui/demo.patch'],
+   ui:{dir:'.',plugin:'demo',dist:'dist',build:[[process.execPath,'-e',"const f=require('fs');f.mkdirSync('dist',{recursive:true});f.writeFileSync('dist/index.js','ok')"]]},
+  }))
+  const home=path.join(root,'home');const coreData=path.join(root,'coreData');const state={installed:{}}
+  const record=await installPackage('@razuresoft/0kay-demo',{home,source,coreData},state)
+  assert.ok(await fs.stat(path.join(coreData,'plugin-ui','demo','index.js')).then(()=>true,()=>false))
+  assert.ok(await fs.stat(path.join(coreData,'ui','demo.patch')).then(()=>true,()=>false))
+  const result=await uninstallPackage('@razuresoft/0kay-demo',{home,coreData},state)
+  assert.equal(result.removedTree,true)
+  assert.equal(await fs.stat(path.join(coreData,'plugin-ui','demo')).then(()=>true,()=>false),false)
+  assert.equal(await fs.stat(path.join(coreData,'ui','demo.patch')).then(()=>true,()=>false),false)
+  assert.equal(await fs.stat(record.repositoryRoot).then(()=>true,()=>false),false)
+  assert.equal(state.installed['@razuresoft/0kay-demo'],undefined)
+ }finally{await fs.rm(root,{recursive:true,force:true})}
+})
+test('uninstall keeps a source tree outside the packages directory',async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'0kay-pm-keep-'))
+ try{
+  const source=path.join(root,'source');await fs.mkdir(source)
+  await fs.writeFile(path.join(source,'manifest.json'),JSON.stringify({schema:1,name:'@razuresoft/0kay-source',version:'1.0.0',install:[]}))
+  const home=path.join(root,'home');const coreData=path.join(root,'coreData');const state={installed:{}}
+  const record=await installPackage('@razuresoft/0kay-source',{home,source,coreData},state)
+  state.installed['@razuresoft/0kay-source'].repositoryRoot=source
+  const result=await uninstallPackage('@razuresoft/0kay-source',{home,coreData},state)
+  assert.equal(result.removedTree,false)
+  assert.ok(await fs.stat(source).then(()=>true,()=>false),'source tree preserved')
+  assert.equal(state.installed['@razuresoft/0kay-source'],undefined)
  }finally{await fs.rm(root,{recursive:true,force:true})}
 })
 test('run reports a missing executable clearly',async()=>{

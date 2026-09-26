@@ -281,5 +281,26 @@ const cwd=effectiveName==='@razuresoft/0kay-agent'?path.join(staging,'agent'):pa
   if(effectiveName==='@razuresoft/0kay-life')await run(['python','-m','pip','install','-e','.'],record.cwd)
   if(effectiveName==='@razuresoft/0kay'&&(manifest.modules||[]).includes('life/manifest.json'))await run(['python','-m','pip','install','-e','.'],path.join(destination,'life'))
   state.installed[effectiveName]=record;return record
- }catch(error){await fs.rm(staging,{recursive:true,force:true});throw error}
+  }catch(error){await fs.rm(staging,{recursive:true,force:true});throw error}
+}
+/**
+ * Remove a 0kay-pm installation: unpublish its UI bundle and patches, then drop
+ * the package directory (only when 0kay-pm created it; a source checkout stays).
+ * Caller is responsible for stopping services and saving state.
+ */
+export async function uninstallPackage(name,options,state){
+ const record=state.installed[name];if(!record)throw new Error(`${name} is not installed`)
+ const dataRoot=path.resolve(options.coreData||process.env.CORE_DATA_DIR||'data')
+ const removed=[]
+ try{
+  const manifest=validateManifest(JSON.parse(await fs.readFile(path.join(record.repositoryRoot,'manifest.json'),'utf8')))
+  if(manifest.ui){const plugin=manifest.ui.plugin||manifest.name.split('/')[1];await fs.rm(path.join(dataRoot,'plugin-ui',plugin),{recursive:true,force:true});removed.push(`plugin-ui/${plugin}`)}
+  for(const relative of manifest.patches||[]){const file=path.basename(relative);await fs.rm(path.join(dataRoot,'ui',file),{force:true});removed.push(`ui/${file}`)}
+ }catch{/* manifest gone; nothing to unpublish */}
+ const packagesRoot=path.join(options.home,'packages')
+ const root=path.resolve(record.repositoryRoot)
+ const removedTree=root.startsWith(packagesRoot+path.sep)
+ if(removedTree)await fs.rm(root,{recursive:true,force:true})
+ delete state.installed[name]
+ return {name,removed,removedTree}
 }
