@@ -45,6 +45,12 @@ export async function resolveSpec(name){
  if(/^[^/]+\/[^/]+$/.test(ownerRepo))return {repository:`https://github.com/${ownerRepo}.git`,manifest:'manifest.json'}
  return null
 }
+/** Installation folder name (scope-aware; repository specs use the repo short name). */
+function packageFolder(name,repoSpec){
+ const trimmed=repoSpec?name.replace(/^https?:\/\/github\.com\//,'').replace(/^git@github\.com:/,'').replace(/\.git$/,'').replace(/^@/,''):name.replace(/^@/,'')
+ if(!repoSpec)return name.startsWith('@razuresoft/')?name.split('/')[1]:trimmed.replace(/\//g,'-')
+ return trimmed.split('/').pop()||'package'
+}
 export function within(root,relative){const value=path.resolve(root,relative);if(value!==root&&!value.startsWith(root+path.sep))throw new Error('Manifest path escapes package');return value}
 /** GitHub repository URL → source archive URL. Fetches archives, never git. tag null selects the branch. */
 export function archiveUrl(repository,branch='main',tag=null){
@@ -75,6 +81,7 @@ export async function downloadArchive(repository,target,options={}){
 export function validateManifest(value){
  if(value.schema!==1||typeof value.name!=='string'||!/^(@[a-z0-9][a-z0-9-]*\/)?[a-z0-9][a-z0-9-]*$/.test(value.name)||typeof value.version!=='string')throw new Error('Invalid manifest identity/schema')
  for(const command of [...(value.install||[]),...(value.start?[value.start]:[]),...(value.ui?.build||[])])if(!Array.isArray(command)||!command.length||command.some(arg=>typeof arg!=='string'||/[\r\n\0]/.test(arg)))throw new Error('Manifest commands must be argument arrays')
+ if(value.patches!=null&&(!Array.isArray(value.patches)||value.patches.some(entry=>typeof entry!=='string'||/[\r\n\0]/.test(entry))))throw new Error('Manifest patches must be path strings')
  if(value.ui!=null){
   if(typeof value.ui!=='object'||value.ui===null||Array.isArray(value.ui))throw new Error('Manifest ui must be an object')
   if(value.ui.dir!=null&&(typeof value.ui.dir!=='string'||/[\r\n\0]/.test(value.ui.dir)))throw new Error('Manifest ui.dir must be a path string')
@@ -104,6 +111,17 @@ async function publishManifestUI(manifest,manifestDir,options){
  if(!await fs.stat(dist).then(()=>true,()=>false))throw new Error(`Plugin UI dist missing: ${dist}`)
  const pluginName=manifest.ui.plugin||manifest.name.split('/')[1]
  await publishPluginUI(dist,pluginName,options.coreData)
+}
+/** Copy a manifest's UI patch files into CORE_DATA_DIR/ui/ so Core picks them up. */
+async function installManifestPatches(manifest,staging,options){
+ if(!manifest.patches||!manifest.patches.length)return
+ const root=path.resolve(options.coreData||process.env.CORE_DATA_DIR||'data')
+ const uiDir=path.join(root,'ui');await fs.mkdir(uiDir,{recursive:true})
+ for(const relative of manifest.patches){
+  const source=within(staging,relative)
+  if(!await fs.stat(source).then(()=>true,()=>false))throw new Error(`Manifest patch missing: ${relative}`)
+  await fs.copyFile(source,path.join(uiDir,path.basename(relative)))
+ }
 }
 /** Locate an executable on PATH (or as a relative path) before spawning it. */
 function findExecutable(name,cwd,extraDirs=[]){
@@ -169,11 +187,12 @@ export async function resolveCommand(command,cwd,home){
 }
 export async function installPackage(name,options,state,stack=[]) {
  if(stack.includes(name))throw new Error(`Dependency cycle: ${[...stack,name].join(' -> ')}`)
- if(state.installed[name]&&!options.reinstall)return state.installed[name]
+ // `owner/repo` or a repository URL installs whatever the manifest declares.
+ const repoSpec=/^(https?:\/\/|git@)/.test(name)||(name.includes('/')&&!name.startsWith('@'))
+ if(!repoSpec&&state.installed[name]&&!options.reinstall)return state.installed[name]
  const spec=options.source?(packages[name]||{repository:null,manifest:'manifest.json'}):await resolveSpec(name)
  if(!spec)throw new Error(`Unknown package ${name}`)
- // Scoped third-party packages keep their scope in the folder name to avoid collisions.
- const folder=name.startsWith('@razuresoft/')?name.split('/')[1]:name.replace(/^@/,'').replace(/\//g,'-')
+ const folder=packageFolder(name,repoSpec)
  const destination=path.join(options.home,'packages',folder);await fs.mkdir(path.dirname(destination),{recursive:true})
  // A leftover directory without a state record means a previous install was
  // interrupted; it is replaced below like an update, keeping data and env.
@@ -185,7 +204,9 @@ export async function installPackage(name,options,state,stack=[]) {
    }
   const manifestPath=within(staging,spec.manifest)
   const manifest=validateManifest(JSON.parse(await fs.readFile(manifestPath,'utf8')))
-  if(manifest.name!==name)throw new Error('Package identity does not match requested package')
+  // A repository spec installs the package under the name the manifest declares.
+  const effectiveName=repoSpec?manifest.name:name
+  if(manifest.name!==effectiveName)throw new Error('Package identity does not match requested package')
   for(const repository of manifest.repositories||[]) {
    const target=within(staging,repository.path)
    if(!await fs.stat(path.join(target,'manifest.json')).then(()=>true,()=>false)){
@@ -204,7 +225,7 @@ export async function installPackage(name,options,state,stack=[]) {
     for(const command of module.install||[])await run(command,path.dirname(childPath))
     if(module.ui)await publishManifestUI(module,path.dirname(childPath),options)
    }
-  if(name==='@razuresoft/0kay-agent') {
+  if(effectiveName==='@razuresoft/0kay-agent') {
    const mcp=state.installed['@razuresoft/0kay-mcp'];if(!mcp)throw new Error('MCP dependency missing')
    // Agent expects sibling mcp and proto. Keep them within its installed package.
    await fs.cp(mcp.repositoryRoot,staging+'/platform',{recursive:true,filter:source=>!['.git','node_modules','data'].includes(path.basename(source))})
@@ -217,9 +238,10 @@ export async function installPackage(name,options,state,stack=[]) {
    await fs.rm(platform,{recursive:true,force:true})
    await run(['npm','ci'],path.join(staging,'mcp'));await run(['npm','run','build'],path.join(staging,'mcp'))
   }
-const cwd=name==='@razuresoft/0kay-agent'?path.join(staging,'agent'):path.dirname(manifestPath)
+const cwd=effectiveName==='@razuresoft/0kay-agent'?path.join(staging,'agent'):path.dirname(manifestPath)
    for(const command of manifest.install||[])await run(command,cwd)
    if(manifest.ui)await publishManifestUI(manifest,path.dirname(manifestPath),options)
+   await installManifestPatches(manifest,staging,options)
     // Preserve runtime data before replacing an installation. Newly built plugin
     // bundles take precedence over old bundles inside core/data/plugin-ui.
     if(await fs.stat(destination).then(()=>true,()=>false)){
@@ -240,10 +262,10 @@ const cwd=name==='@razuresoft/0kay-agent'?path.join(staging,'agent'):path.dirnam
      }
      // Keep the previous tree as a recovery copy, including unlisted user files.
    }else await fs.rename(staging,destination)
-   const record={name,version:manifest.version,repository:spec.repository,repositoryRoot:destination,cwd:path.join(destination,path.relative(staging,cwd)),start:manifest.start||null,modules:manifest.modules||[],installed_at:new Date().toISOString()}
+   const record={name:effectiveName,version:manifest.version,repository:spec.repository,repositoryRoot:destination,cwd:path.join(destination,path.relative(staging,cwd)),start:manifest.start||null,modules:manifest.modules||[],installed_at:new Date().toISOString()}
   // Editable Python installs embed absolute paths. Rebind after atomic promotion.
-  if(name==='@razuresoft/0kay-life')await run(['python','-m','pip','install','-e','.'],record.cwd)
-  if(name==='@razuresoft/0kay'&&(manifest.modules||[]).includes('life/manifest.json'))await run(['python','-m','pip','install','-e','.'],path.join(destination,'life'))
-  state.installed[name]=record;return record
+  if(effectiveName==='@razuresoft/0kay-life')await run(['python','-m','pip','install','-e','.'],record.cwd)
+  if(effectiveName==='@razuresoft/0kay'&&(manifest.modules||[]).includes('life/manifest.json'))await run(['python','-m','pip','install','-e','.'],path.join(destination,'life'))
+  state.installed[effectiveName]=record;return record
  }catch(error){await fs.rm(staging,{recursive:true,force:true});throw error}
 }
