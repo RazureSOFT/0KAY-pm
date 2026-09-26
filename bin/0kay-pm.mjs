@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline/promises'
+import {randomInt} from 'node:crypto'
 import {discover,pinnedRequest,expandTargets,localSubnets} from '../src/discovery.mjs'
 import {installPackage,uninstallPackage,run,validateManifest,within,configureToolchains,resolveCommand} from '../src/installer.mjs'
 import {proxyAgentFor} from '../src/download.mjs'
@@ -110,9 +111,12 @@ async function configure(record,core,choices){
   Object.assign(env,portEnv(choices,Boolean(core)))
   Object.assign(env,bindEnv(choices.bindHost,record.name))
   if(choices.bindHost)console.log(`Exposing Core and WebUI on ${choices.bindHost}; they will be reachable from the network without authentication.`)
-  if(record.name==='@razuresoft/0kay'||record.name==='@razuresoft/0kay-core')env.CORE_LAN_ENABLED='1'
+  if(record.name==='@razuresoft/0kay'||record.name==='@razuresoft/0kay-core'){env.CORE_LAN_ENABLED='1';env.CORE_PIN=randomPin()}
  await fs.writeFile(path.join(record.repositoryRoot,'runtime-env.json'),JSON.stringify(env,null,2),{mode:0o600})
+ return env.CORE_PIN
 }
+/** Six-digit initial access PIN for Core (printed after install). */
+function randomPin(){return String(randomInt(100000,1000000))}
 /** One service per runnable module (or the package itself), named 0kay-<short>. */
 async function packageUnits(record,env,{resolve=false}={}){
  const specs=[]
@@ -180,7 +184,9 @@ try{
   console.log(`Installing ${target.name}${target.version?`@${target.version}`:''}. Package manifests run build/install commands from the selected repository.`)
   const record=await installPackage(target.name,{home,source:flag('--source'),proxy:proxyMirror,proxyUrl,tag:target.version?`v${target.version}`:null,coreData:coreDataRoot()},state)
    await configure(record,core,choices);await save();console.log(`Installed ${record.name}@${record.version}.`)
-   if(args.includes('--foreground'))await startForeground(record);else await startServices(record);break
+   if(args.includes('--foreground'))await startForeground(record);else await startServices(record);
+   if(record.name==='@razuresoft/0kay'||record.name==='@razuresoft/0kay-core'){const pin=JSON.parse(await fs.readFile(path.join(record.repositoryRoot,'runtime-env.json'),'utf8')).CORE_PIN;if(pin)console.log(`\n  Access PIN: ${pin}\n  Use this PIN to sign in to Core; change it in the setup wizard.\n`)}
+   break
  }
  case 'update':{
   const target=parseTarget(args[1]);if(!target.name)throw new Error('Usage: 0kay-pm update <package>[@version] [--proxy] [--source <local-tree>]')
