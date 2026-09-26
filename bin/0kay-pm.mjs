@@ -67,7 +67,7 @@ async function portChoices(name){
  }
  return choices
 }
-async function scan(extraTargets=[],timeout,maxHosts){const remembered=Object.values(state.cores||{}).map(core=>core.host).filter(Boolean);const targets=[...new Set([...extraTargets,...remembered])];const cores=await discover(timeout,expandTargets(targets,maxHosts));for(const core of cores){const old=state.cores[core.id];if(old&&old.fingerprint!==core.fingerprint)core.identity_changed=true;state.cores[core.id]=core}await save();return cores}
+async function scan(extraTargets=[],timeout,maxHosts,broadcast=true){const remembered=broadcast?Object.values(state.cores||{}).map(core=>core.host).filter(Boolean):[];const targets=[...new Set([...extraTargets,...remembered])];const cores=await discover(timeout,expandTargets(targets,maxHosts),{broadcast});for(const core of cores){const old=state.cores[core.id];if(old&&old.fingerprint!==core.fingerprint)core.identity_changed=true;state.cores[core.id]=core}await save();return cores}
 /**
  * Extra discovery targets: positional IPs, --host <ip> (repeatable),
  * --subnet <cidr> (repeatable), --lan (every local subnet), OKAY_DISCOVER_HOSTS.
@@ -163,7 +163,14 @@ async function startForeground(record){
 }
 try{
  switch(args[0]){
- case 'discover':console.log(JSON.stringify(await scan(discoverTargets(args.slice(1)),Number(flag('--timeout'))||undefined,Number(flag('--max-hosts'))||undefined),null,2));break
+ case 'discover':{
+  const explicit=discoverTargets(args.slice(1))
+  // Explicit targets query only those hosts; a bare discover also broadcasts.
+  const cores=await scan(explicit,Number(flag('--timeout'))||undefined,Number(flag('--max-hosts'))||undefined,explicit.length===0)
+  console.log(JSON.stringify(cores,null,2))
+  if(explicit.length&&!cores.length)console.error('No Core answered at the requested target(s). Ensure the target runs Core with CORE_LAN_ENABLED=1 and UDP 50050 is reachable.')
+  break
+ }
  case 'cores':console.log(JSON.stringify(state.cores,null,2));break
  case 'install':{
   const cores=await scan(); // Mandatory discovery before every install, even offline/local.

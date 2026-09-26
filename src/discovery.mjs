@@ -35,14 +35,25 @@ export function expandTargets(entries, maxHosts=1024) {
  return [...out]
 }
 
-export async function discover(timeout=1600, extraTargets=[]) {
+/**
+ * Probe for Cores. With `broadcast` (default) it also hits loopback and every
+ * local subnet broadcast; with explicit targets and broadcast=false it queries
+ * only those hosts, so a targeted lookup is not masked by other Cores.
+ */
+export async function discover(timeout=1600, extraTargets=[], {broadcast=true}={}) {
  const socket=dgram.createSocket('udp4'), nonce=randomUUID(), found=new Map()
+ // Ignore transient per-target send errors (ECONNREFUSED/EHOSTUNREACH) while scanning.
+ socket.on('error',()=>{})
  await new Promise((resolve,reject)=>{socket.once('error',reject);socket.bind(0,'0.0.0.0',resolve)})
  socket.setBroadcast(true)
  socket.on('message',(raw,remote)=>{try{const value=JSON.parse(raw);if(value.protocol==='0kay-core-v1'&&value.nonce===nonce&&/^[a-f0-9]{64}$/.test(value.fingerprint)&&Number.isInteger(value.http_port)&&Number.isInteger(value.grpc_port))found.set(value.id,{...value,host:remote.address,last_seen:new Date().toISOString()})}catch{}})
- const targets=new Set(['127.0.0.1','255.255.255.255'])
- for(const entries of Object.values(os.networkInterfaces()))for(const entry of entries||[])if(entry.family==='IPv4'&&!entry.internal){const ip=entry.address.split('.').map(Number),mask=entry.netmask.split('.').map(Number);targets.add(ip.map((v,i)=>v|(~mask[i]&255)).join('.'))}
+ const targets=new Set()
+ if(broadcast){
+  targets.add('127.0.0.1');targets.add('255.255.255.255')
+  for(const entries of Object.values(os.networkInterfaces()))for(const entry of entries||[])if(entry.family==='IPv4'&&!entry.internal){const ip=entry.address.split('.').map(Number),mask=entry.netmask.split('.').map(Number);targets.add(ip.map((v,i)=>v|(~mask[i]&255)).join('.'))}
+ }
  for(const address of extraTargets||[])if(address)targets.add(String(address))
+ if(!targets.size)return []
  const payload=Buffer.from(JSON.stringify({protocol:'0kay-discover-v1',nonce}))
  for(const address of targets) socket.send(payload,50050,address,()=>{})
  await new Promise(resolve=>setTimeout(resolve,timeout));socket.close()
