@@ -1,7 +1,19 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import dgram from 'node:dgram'
-import {discover} from '../src/discovery.mjs'
+import {discover,expandTargets,localSubnets} from '../src/discovery.mjs'
+test('localSubnets yields cidr strings',()=>{
+ const subnets=localSubnets()
+ assert.ok(Array.isArray(subnets))
+ for(const subnet of subnets)assert.match(subnet,/\/\d{1,2}$/)
+})
+test('expandTargets handles ips, cidr ranges and hostnames',()=>{
+ assert.deepEqual(expandTargets(['10.0.0.5']),['10.0.0.5'])
+ assert.deepEqual(expandTargets(['192.168.1.0/30']),['192.168.1.0','192.168.1.1','192.168.1.2','192.168.1.3'])
+ assert.equal(expandTargets(['192.168.1.0/24'],10).length,10)
+ assert.deepEqual(expandTargets(['core.local']),['core.local'])
+ assert.deepEqual(expandTargets(['bad/999']),['bad/999'])
+})
 test('discovery correlates responses and ignores invalid peers',async t=>{
  const server=dgram.createSocket('udp4')
  const bound=await new Promise(resolve=>{server.once('error',()=>resolve(false));server.bind(50050,'127.0.0.1',()=>resolve(true))})

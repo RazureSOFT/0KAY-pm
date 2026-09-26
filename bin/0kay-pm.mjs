@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline/promises'
-import {discover,pinnedRequest} from '../src/discovery.mjs'
+import {discover,pinnedRequest,expandTargets,localSubnets} from '../src/discovery.mjs'
 import {installPackage,run,validateManifest,within,configureToolchains,resolveCommand} from '../src/installer.mjs'
 import {proxyAgentFor} from '../src/download.mjs'
 import {toolchainBinDirs} from '../src/toolchain.mjs'
@@ -67,7 +67,24 @@ async function portChoices(name){
  }
  return choices
 }
-async function scan(){const cores=await discover();for(const core of cores){const old=state.cores[core.id];if(old&&old.fingerprint!==core.fingerprint)core.identity_changed=true;state.cores[core.id]=core}await save();return cores}
+async function scan(extraTargets=[],timeout,maxHosts){const remembered=Object.values(state.cores||{}).map(core=>core.host).filter(Boolean);const targets=[...new Set([...extraTargets,...remembered])];const cores=await discover(timeout,expandTargets(targets,maxHosts));for(const core of cores){const old=state.cores[core.id];if(old&&old.fingerprint!==core.fingerprint)core.identity_changed=true;state.cores[core.id]=core}await save();return cores}
+/**
+ * Extra discovery targets: positional IPs, --host <ip> (repeatable),
+ * --subnet <cidr> (repeatable), --lan (every local subnet), OKAY_DISCOVER_HOSTS.
+ */
+function discoverTargets(rest){
+ const out=[]
+ for(let i=0;i<rest.length;i++){
+  const value=rest[i]
+  if(value==='--lan'){out.push(...localSubnets());continue}
+  if(value==='--host'||value==='--subnet'){const next=rest[i+1];if(next&&!next.startsWith('--')){out.push(next);i++}continue}
+  if(value==='--timeout'||value==='--max-hosts'){i++;continue}
+  if(value.startsWith('--'))continue
+  out.push(value)
+ }
+ for(const value of String(process.env.OKAY_DISCOVER_HOSTS||'').split(','))if(value.trim())out.push(value.trim())
+ return out
+}
 async function pair(cores){
  if(!cores.length){console.log('No LAN Core discovered. Start Core with CORE_LAN_ENABLED=1; UDP 50050 and TLS 8443/5443 must be reachable.');return null}
  cores.forEach((core,index)=>console.log(`${index+1}. ${core.name} ${core.host} [${core.id}] fingerprint ${core.fingerprint}${core.identity_changed?' CHANGED':''}`))
@@ -146,7 +163,7 @@ async function startForeground(record){
 }
 try{
  switch(args[0]){
- case 'discover':console.log(JSON.stringify(await scan(),null,2));break
+ case 'discover':console.log(JSON.stringify(await scan(discoverTargets(args.slice(1)),Number(flag('--timeout'))||undefined,Number(flag('--max-hosts'))||undefined),null,2));break
  case 'cores':console.log(JSON.stringify(state.cores,null,2));break
  case 'install':{
   const cores=await scan(); // Mandatory discovery before every install, even offline/local.
@@ -178,6 +195,6 @@ try{
   const name=args[1];if(!name)throw new Error('Usage: 0kay-pm status <package>')
   await printStatus(name);break
  }
-  default:console.log('0kay-pm install <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-pair] [--no-toolchain-download] [--expose | --bind-host <addr> | --no-expose] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-toolchain-download]\n0kay-pm start <package> [--foreground]\n0kay-pm stop <package>\n0kay-pm status <package>\n0kay-pm discover\n0kay-pm cores\nInstall/start register services that keep running after the session ends and start on boot; only `stop` shuts them down. --foreground runs in this terminal instead.\nPorts are asked interactively on install; the flags override for scripts.\n--proxy alone downloads via the gh-proxy.com mirror; with host:port or a URL it tunnels through that HTTP proxy. HTTPS_PROXY is honored too.\nMissing go/node/python build toolchains are downloaded to ~/.0kay/toolchains; --no-toolchain-download disables that.\nCore/WebUI installs ask whether to listen on 0.0.0.0; --expose enables it, --bind-host <addr> overrides, --no-expose skips the prompt.')
+  default:console.log('0kay-pm install <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-pair] [--no-toolchain-download] [--expose | --bind-host <addr> | --no-expose] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-toolchain-download]\n0kay-pm start <package> [--foreground]\n0kay-pm stop <package>\n0kay-pm status <package>\n0kay-pm discover [ip ...] [--host <ip>] [--subnet <cidr>] [--lan] [--timeout <ms>] [--max-hosts <n>]\n0kay-pm cores\nInstall/start register services that keep running after the session ends and start on boot; only `stop` shuts them down. --foreground runs in this terminal instead.\nPorts are asked interactively on install; the flags override for scripts.\n--proxy alone downloads via the gh-proxy.com mirror; with host:port or a URL it tunnels through that HTTP proxy. HTTPS_PROXY is honored too.\nMissing go/node/python build toolchains are downloaded to ~/.0kay/toolchains; --no-toolchain-download disables that.\nCore/WebUI installs ask whether to listen on 0.0.0.0; --expose enables it, --bind-host <addr> overrides, --no-expose skips the prompt.')
  }
 }catch(error){console.error(error.message);process.exitCode=1}
