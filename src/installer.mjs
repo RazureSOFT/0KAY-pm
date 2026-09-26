@@ -276,7 +276,7 @@ const cwd=effectiveName==='@razuresoft/0kay-agent'?path.join(staging,'agent'):pa
      }
      // Keep the previous tree as a recovery copy, including unlisted user files.
    }else await fs.rename(staging,destination)
-   const record={name:effectiveName,version:manifest.version,repository:spec.repository,repositoryRoot:destination,cwd:path.join(destination,path.relative(staging,cwd)),start:manifest.start||null,modules:manifest.modules||[],installed_at:new Date().toISOString()}
+   const record={name:effectiveName,version:manifest.version,repository:spec.repository||manifest.repository||null,repositoryRoot:destination,cwd:path.join(destination,path.relative(staging,cwd)),start:manifest.start||null,modules:manifest.modules||[],installed_at:new Date().toISOString()}
   // Editable Python installs embed absolute paths. Rebind after atomic promotion.
   if(effectiveName==='@razuresoft/0kay-life')await run(['python','-m','pip','install','-e','.'],record.cwd)
   if(effectiveName==='@razuresoft/0kay'&&(manifest.modules||[]).includes('life/manifest.json'))await run(['python','-m','pip','install','-e','.'],path.join(destination,'life'))
