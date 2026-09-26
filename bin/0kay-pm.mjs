@@ -133,7 +133,7 @@ async function packageUnits(record,env,{resolve=false}={}){
 }
 /** Install/start daemonized services that survive the terminal and boot later. */
 async function startServices(record){
- const env=JSON.parse(await fs.readFile(path.join(record.repositoryRoot,'runtime-env.json'),'utf8'))
+ const env=JSON.parse(await fs.readFile(path.join(record.repositoryRoot,'runtime-env.json'),'utf8').catch(()=>'{}'))
  const units=await packageUnits(record,env,{resolve:true})
  if(!units.length){console.log('Library/UI package; no service to start.');return}
  const {backend}=await installServices({home,units})
@@ -155,7 +155,7 @@ async function printStatus(name){
 }
 /** Run in the terminal (blocking); only with --foreground for debugging. */
 async function startForeground(record){
- const env=JSON.parse(await fs.readFile(path.join(record.repositoryRoot,'runtime-env.json'),'utf8'))
+ const env=JSON.parse(await fs.readFile(path.join(record.repositoryRoot,'runtime-env.json'),'utf8').catch(()=>'{}'))
  const units=await packageUnits(record,env)
  if(!units.length){console.log('Library/UI package; no standalone process.');return}
  console.log(`Starting ${record.name} in this terminal; press Ctrl+C to stop.`)

@@ -197,7 +197,11 @@ export async function installPackage(name,options,state,stack=[]) {
  if(!repoSpec&&state.installed[name]&&!options.reinstall)return state.installed[name]
  const spec=options.source?(packages[name]||{repository:null,manifest:'manifest.json'}):await resolveSpec(name)
  if(!spec)throw new Error(`Unknown package ${name}`)
- const folder=packageFolder(name,repoSpec)
+ // Reuse the folder of an existing installation so updates never orphan the
+ // package's runtime-env.json/data when the name form changes (a scoped npm
+ // name and its owner/repo form slug differently but are the same package).
+ const previousRoot=state&&state.installed&&state.installed[name]?state.installed[name].repositoryRoot:null
+ const folder=previousRoot?path.basename(previousRoot):packageFolder(name,repoSpec)
  const destination=path.join(options.home,'packages',folder);await fs.mkdir(path.dirname(destination),{recursive:true})
  // A leftover directory without a state record means a previous install was
  // interrupted; it is replaced below like an update, keeping data and env.
@@ -263,7 +267,9 @@ const cwd=effectiveName==='@razuresoft/0kay-agent'?path.join(staging,'agent'):pa
       const source=path.join(destination,relative)
       if(await fs.stat(source).then(()=>true,()=>false))await fs.cp(source,path.join(staging,relative),{recursive:true,force:false,errorOnExist:false})
      }
-    const previousEnv=await fs.readFile(path.join(destination,'runtime-env.json'),'utf8').catch(()=>null)
+    const envRoots=[destination,state&&state.installed&&state.installed[effectiveName]?state.installed[effectiveName].repositoryRoot:null].filter(Boolean)
+    let previousEnv=null
+    for(const root of envRoots){previousEnv=await fs.readFile(path.join(root,'runtime-env.json'),'utf8').catch(()=>null);if(previousEnv!=null)break}
     const backup=destination+'.old-'+randomUUID()
     await fs.rename(destination,backup)
     try{
