@@ -62,18 +62,23 @@ export function archiveUrl(repository,branch='main',tag=null){
 /** Download a repository source archive and extract it into target (proxy aware, retried). */
 export async function downloadArchive(repository,target,options={}){
  const archive=archiveUrl(repository,'main',options.tag||null)
- const url=options.proxy?`https://gh-proxy.com/${archive}`:archive
+ // codeload serves the same tarball and survives networks where github.com is
+ // blocked; retry it when the canonical archive host is unreachable.
+ const fallback=archive.replace('https://github.com/','https://codeload.github.com/').replace('/archive/','/tar.gz/').replace(/\.tar\.gz$/,'')
  const agent=proxyAgentFor(options)
  let lastError
- for(let attempt=1;attempt<=3;attempt++){
-  try{
-   const buffer=await downloadOnce(url,5,agent)
-   await fs.rm(target,{recursive:true,force:true})
-   extractTarGz(buffer,target)
-   return
-  }catch(error){
-   lastError=error
-   if(attempt<3)await new Promise(resolve=>setTimeout(resolve,attempt*2000))
+ for(const candidate of [archive,fallback]){
+  const url=options.proxy?`https://gh-proxy.com/${candidate}`:candidate
+  for(let attempt=1;attempt<=2;attempt++){
+   try{
+    const buffer=await downloadOnce(url,5,agent)
+    await fs.rm(target,{recursive:true,force:true})
+    extractTarGz(buffer,target)
+    return
+   }catch(error){
+    lastError=error
+    if(attempt<2)await new Promise(resolve=>setTimeout(resolve,attempt*2000))
+   }
   }
  }
  throw lastError
