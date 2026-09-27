@@ -55,7 +55,8 @@ export function proxyAgentFor(options){
  * callers can fall back to a branch.
  */
 export async function latestReleaseTag(owner,repo,{mirror=false,proxyUrl=null}={}){
- const base=mirror?'https://gh-proxy.com/':''
+ const prefix=mirror?(typeof mirror==='string'?String(mirror).replace(/\/+$/,''):'https://gh-proxy.com'):''
+ const base=prefix?`${prefix}/`:''
  const url=`${base}https://api.github.com/repos/${owner}/${repo}/releases/latest`
  try{
   const buffer=await downloadOnce(url,5,proxyAgentFor({proxyUrl}),{Accept:'application/vnd.github+json','User-Agent':'0kay-pm'})

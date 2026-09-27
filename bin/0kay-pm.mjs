@@ -34,6 +34,8 @@ const coreDataRoot=()=>path.join(state.installed['@razuresoft/0kay']?.repository
 const proxyValue=flag('--proxy')
 const proxyUrl=proxyValue&&!proxyValue.startsWith('--')&&/[:/]/.test(proxyValue)?proxyValue:null
 const proxyMirror=args.includes('--proxy')&&!proxyUrl
+/** Mirror prefix for 0kay-pm's own downloads: OKAY_GITHUB_PROXY (set by Core) or --proxy. */
+const githubMirror=(process.env.OKAY_GITHUB_PROXY||'').trim().replace(/\/+$/,'')||(proxyMirror?'https://gh-proxy.com':'')
 // Missing build toolchains (go/node/python) are downloaded into ~/.0kay/toolchains
 // by default. --no-toolchain-download or OKAY_TOOLCHAIN_DOWNLOAD=0 disables it.
 const allowToolchainDownload=!args.includes('--no-toolchain-download')&&process.env.OKAY_TOOLCHAIN_DOWNLOAD!=='0'
@@ -188,11 +190,11 @@ async function selfUpdate(){
  }else{
   let version=pinned?String(pinned).replace(/^v/,''):null
   if(!version&&!beta){
-   const tag=await latestReleaseTag('RazureSOFT','0KAY-pm',{mirror:proxyMirror,proxyUrl})
+   const tag=await latestReleaseTag('RazureSOFT','0KAY-pm',{mirror:githubMirror,proxyUrl})
    if(tag)version=tag.replace(/^v/,'')
   }
   label=version?`v${version}`:'main'
-  target=selfUpdateTarget({version,mirror:proxyMirror})
+  target=selfUpdateTarget({version,mirror:githubMirror})
  }
  console.log(`Updating 0kay-pm ${current} → ${label} (npm install -g).`)
  await run(['npm','install','-g',target],process.cwd())
@@ -215,7 +217,7 @@ try{
   const core=args.includes('--no-pair')?null:await pair(cores)
   const choices=await portChoices(target.name)
   console.log(`Installing ${target.name}${target.version?`@${target.version}`:''}. Package manifests run build/install commands from the selected repository.`)
-  const record=await installPackage(target.name,{home,source:flag('--source'),proxy:proxyMirror,proxyUrl,tag:target.version?`v${target.version}`:null,coreData:coreDataRoot()},state)
+  const record=await installPackage(target.name,{home,source:flag('--source'),mirror:githubMirror,proxyUrl,tag:target.version?`v${target.version}`:null,coreData:coreDataRoot()},state)
    await configure(record,core,choices);await save();console.log(`Installed ${record.name}@${record.version}.`)
    if(args.includes('--foreground'))await startForeground(record);else await startServices(record);
    if(record.name==='@razuresoft/0kay'||record.name==='@razuresoft/0kay-core'){const pin=JSON.parse(await fs.readFile(path.join(record.repositoryRoot,'runtime-env.json'),'utf8')).CORE_PIN;if(pin)console.log(`\n  Access PIN: ${pin}\n  Use this PIN to sign in to Core; change it in the setup wizard.\n`)}
@@ -226,7 +228,7 @@ try{
   if(target.name==='@razuresoft/0kay-pm'||target.name==='0kay-pm'){await selfUpdate();break}
   if(!state.installed[target.name])throw new Error(`${target.name} is not installed`)
   console.log(`Updating ${target.name}${target.version?`@${target.version}`:' to the latest main branch'}.`)
-  const record=await installPackage(target.name,{home,source:flag('--source'),proxy:proxyMirror,proxyUrl,reinstall:true,tag:target.version?`v${target.version}`:null,coreData:coreDataRoot()},state)
+  const record=await installPackage(target.name,{home,source:flag('--source'),mirror:githubMirror,proxyUrl,reinstall:true,tag:target.version?`v${target.version}`:null,coreData:coreDataRoot()},state)
   await save();console.log(`Updated ${record.name}@${record.version}. Start: 0kay-pm start ${record.name}`);break
  }
  case 'start':{

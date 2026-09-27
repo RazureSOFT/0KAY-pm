@@ -69,7 +69,8 @@ export function selfUpdateTarget({source=null,version=null,branch='main',mirror=
  if(source)return path.resolve(source)
  const ref=version?`v${String(version).replace(/^v/,'')}`:branch
  const url=`https://codeload.github.com/RazureSOFT/0KAY-pm/tar.gz/${ref}`
- return mirror?`https://gh-proxy.com/${url}`:url
+ const prefix=mirror?(typeof mirror==='string'?String(mirror).replace(/\/+$/,''):'https://gh-proxy.com'):''
+ return prefix?`${prefix}/${url}`:url
 }
 /** Download a repository source archive and extract it into target (proxy aware, retried). */
 export async function downloadArchive(repository,target,options={}){
@@ -78,9 +79,11 @@ export async function downloadArchive(repository,target,options={}){
  // blocked; retry it when the canonical archive host is unreachable.
  const fallback=archive.replace('https://github.com/','https://codeload.github.com/').replace('/archive/','/tar.gz/').replace(/\.tar\.gz$/,'')
  const agent=proxyAgentFor(options)
+ const mirror=options.mirror||(options.proxy?'https://gh-proxy.com':'')
+ const prefix=mirror?String(mirror).replace(/\/+$/,''):''
  let lastError
  for(const candidate of [archive,fallback]){
-  const url=options.proxy?`https://gh-proxy.com/${candidate}`:candidate
+  const url=prefix?`${prefix}/${candidate}`:candidate
   for(let attempt=1;attempt<=2;attempt++){
    try{
     const buffer=await downloadOnce(url,5,agent)
@@ -207,7 +210,11 @@ export async function installPackage(name,options,state,stack=[]) {
  // `owner/repo` or a repository URL installs whatever the manifest declares.
  const repoSpec=/^(https?:\/\/|git@)/.test(name)||(name.includes('/')&&!name.startsWith('@'))
  if(!repoSpec&&state.installed[name]&&!options.reinstall)return state.installed[name]
- const spec=options.source?(packages[name]||{repository:null,manifest:'manifest.json'}):await resolveSpec(name)
+ const previous=state&&state.installed&&state.installed[name]?state.installed[name]:null
+ // Updates reuse the repository the package was installed from: re-resolving a
+ // scoped name whose repository lives under another owner (e.g. a plugin package
+ // `@razuresoft/x` hosted at `razureink/0KAY-x`) would fetch the wrong repo.
+ const spec=options.source?(packages[name]||{repository:null,manifest:'manifest.json'}):((options.reinstall&&previous&&previous.repository)?{repository:previous.repository,manifest:'manifest.json'}:await resolveSpec(name))
  if(!spec)throw new Error(`Unknown package ${name}`)
  // Reuse the folder of an existing installation so updates never orphan the
  // package's runtime-env.json/data when the name form changes (a scoped npm
