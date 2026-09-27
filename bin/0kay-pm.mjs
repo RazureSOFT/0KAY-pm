@@ -5,8 +5,8 @@ import path from 'node:path'
 import readline from 'node:readline/promises'
 import {randomInt} from 'node:crypto'
 import {discover,pinnedRequest,expandTargets,localSubnets} from '../src/discovery.mjs'
-import {installPackage,uninstallPackage,run,validateManifest,within,configureToolchains,resolveCommand} from '../src/installer.mjs'
-import {proxyAgentFor} from '../src/download.mjs'
+import {installPackage,uninstallPackage,run,validateManifest,within,configureToolchains,resolveCommand,selfUpdateTarget} from '../src/installer.mjs'
+import {proxyAgentFor,latestReleaseTag} from '../src/download.mjs'
 import {toolchainBinDirs} from '../src/toolchain.mjs'
 import {installServices,stopServices,servicesStatus} from '../src/service.mjs'
 import {parsePort,portEnv,bindEnv} from '../src/env.mjs'
@@ -165,6 +165,39 @@ async function startForeground(record){
  console.log(`Starting ${record.name} in this terminal; press Ctrl+C to stop.`)
  await Promise.all(units.map(unit=>run(unit.command,unit.cwd,env)))
 }
+/** Current CLI version, read from the package.json next to this script. */
+async function cliVersion(){
+ try{return JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8')).version||'?'}catch{return '?'}
+}
+/**
+ * Update the 0kay-pm CLI itself. A running global package cannot be swapped by
+ * `update` (the package is not in state.json), so reinstall it with npm:
+ *  0kay-pm self-update [<version>] [--version <v>] [--beta|--main] [--source <dir>] [--proxy]
+ * Defaults to the latest published release, falling back to the main branch.
+ */
+async function selfUpdate(){
+ const source=flag('--source')
+ const raw=args[1]&&!args[1].startsWith('-')?args[1]:null
+ const pinned=(raw?parseTarget(raw).version:null)||flag('--version')
+ const beta=args.includes('--beta')||args.includes('--main')
+ const current=await cliVersion()
+ let target,label
+ if(source){
+  label=path.resolve(source)
+  target=selfUpdateTarget({source})
+ }else{
+  let version=pinned?String(pinned).replace(/^v/,''):null
+  if(!version&&!beta){
+   const tag=await latestReleaseTag('RazureSOFT','0KAY-pm',{mirror:proxyMirror,proxyUrl})
+   if(tag)version=tag.replace(/^v/,'')
+  }
+  label=version?`v${version}`:'main'
+  target=selfUpdateTarget({version,mirror:proxyMirror})
+ }
+ console.log(`Updating 0kay-pm ${current} → ${label} (npm install -g).`)
+ await run(['npm','install','-g',target],process.cwd())
+ console.log(`0kay-pm updated to ${label}. Re-run your command to use the new version.`)
+}
 try{
  switch(args[0]){
  case 'discover':{
@@ -190,6 +223,7 @@ try{
  }
  case 'update':{
   const target=parseTarget(args[1]);if(!target.name)throw new Error('Usage: 0kay-pm update <package>[@version] [--proxy] [--source <local-tree>]')
+  if(target.name==='@razuresoft/0kay-pm'||target.name==='0kay-pm'){await selfUpdate();break}
   if(!state.installed[target.name])throw new Error(`${target.name} is not installed`)
   console.log(`Updating ${target.name}${target.version?`@${target.version}`:' to the latest main branch'}.`)
   const record=await installPackage(target.name,{home,source:flag('--source'),proxy:proxyMirror,proxyUrl,reinstall:true,tag:target.version?`v${target.version}`:null,coreData:coreDataRoot()},state)
@@ -217,6 +251,11 @@ try{
   const name=args[1];if(!name)throw new Error('Usage: 0kay-pm status <package>')
   await printStatus(name);break
  }
-  default:console.log('0kay-pm uninstall <package>\n0kay-pm install <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-pair] [--no-toolchain-download] [--expose | --bind-host <addr> | --no-expose] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-toolchain-download]\n0kay-pm start <package> [--foreground]\n0kay-pm stop <package>\n0kay-pm status <package>\n0kay-pm discover [ip ...] [--host <ip>] [--subnet <cidr>] [--lan] [--timeout <ms>] [--max-hosts <n>]\n0kay-pm cores\nInstall/start register services that keep running after the session ends and start on boot; only `stop` shuts them down. --foreground runs in this terminal instead.\nPorts are asked interactively on install; the flags override for scripts.\n--proxy alone downloads via the gh-proxy.com mirror; with host:port or a URL it tunnels through that HTTP proxy. HTTPS_PROXY is honored too.\nThird-party packages resolve via the npm registry (repository field), else a GitHub owner/repo name; --source <local-tree> installs a local checkout of any package.\nMissing go/node/python build toolchains are downloaded to ~/.0kay/toolchains; --no-toolchain-download disables that.\nCore/WebUI installs ask whether to listen on 0.0.0.0; --expose enables it, --bind-host <addr> overrides, --no-expose skips the prompt.')
+ case 'self-update':
+ case 'selfupdate':
+ case 'upgrade':{
+  await selfUpdate();break
+ }
+  default:console.log('0kay-pm self-update [<version>] [--version <v>] [--beta | --main] [--source <local-tree>] [--proxy]\n0kay-pm uninstall <package>\n0kay-pm install <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-pair] [--no-toolchain-download] [--expose | --bind-host <addr> | --no-expose] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-toolchain-download]\n0kay-pm start <package> [--foreground]\n0kay-pm stop <package>\n0kay-pm status <package>\n0kay-pm discover [ip ...] [--host <ip>] [--subnet <cidr>] [--lan] [--timeout <ms>] [--max-hosts <n>]\n0kay-pm cores\nInstall/start register services that keep running after the session ends and start on boot; only `stop` shuts them down. --foreground runs in this terminal instead.\nPorts are asked interactively on install; the flags override for scripts.\n--proxy alone downloads via the gh-proxy.com mirror; with host:port or a URL it tunnels through that HTTP proxy. HTTPS_PROXY is honored too.\nThird-party packages resolve via the npm registry (repository field), else a GitHub owner/repo name; --source <local-tree> installs a local checkout of any package.\nMissing go/node/python build toolchains are downloaded to ~/.0kay/toolchains; --no-toolchain-download disables that.\nCore/WebUI installs ask whether to listen on 0.0.0.0; --expose enables it, --bind-host <addr> overrides, --no-expose skips the prompt.')
  }
 }catch(error){console.error(error.message);process.exitCode=1}

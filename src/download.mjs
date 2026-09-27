@@ -49,6 +49,20 @@ export function proxyAgentFor(options){
  }
  return environmentAgent()
 }
+/**
+ * Latest published release tag for a GitHub repository (proxy aware).
+ * Returns null when the repository has no release or GitHub is unreachable, so
+ * callers can fall back to a branch.
+ */
+export async function latestReleaseTag(owner,repo,{mirror=false,proxyUrl=null}={}){
+ const base=mirror?'https://gh-proxy.com/':''
+ const url=`${base}https://api.github.com/repos/${owner}/${repo}/releases/latest`
+ try{
+  const buffer=await downloadOnce(url,5,proxyAgentFor({proxyUrl}),{Accept:'application/vnd.github+json','User-Agent':'0kay-pm'})
+  const data=JSON.parse(buffer.toString('utf8'))
+  return typeof data.tag_name==='string'&&data.tag_name?data.tag_name:null
+ }catch{return null}
+}
 /** One HTTPS GET with redirect following; resolves the full body buffer. */
 export function downloadOnce(url,redirects=5,agent=null,headers={}){
  return new Promise((resolve,reject)=>{

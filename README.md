@@ -62,6 +62,22 @@ package before updating and start it again afterwards (`0kay-pm stop <package>`
 then `0kay-pm start <package>`).
 The installed version comes from the package `manifest.json`.
 
+## Self-update
+
+The CLI is a global npm package, so it cannot update itself through `update`
+(it is not tracked in `state.json`). Reinstall it with:
+
+```powershell
+0kay-pm self-update             # latest published release, else the main branch
+0kay-pm self-update --beta      # follow the main branch (beta channel)
+0kay-pm self-update 0.1.2       # pin a release tag (or --version 0.1.2)
+0kay-pm update @razuresoft/0kay-pm   # same as self-update
+0kay-pm self-update --source ./pm    # reinstall from a local checkout
+```
+
+It runs `npm install -g` against the matching `codeload.github.com` tarball (or
+the local tree) and honors `--proxy` / `HTTPS_PROXY`. `upgrade` is an alias.
+
 ## Services
 
 After a successful `install`, 0kay-pm starts each runnable module as a
@@ -142,5 +158,5 @@ end of install and atomically publishes `dist` (default `dist`) to
 
 Commit the manifests in the umbrella and standalone Agent repositories before a
 GitHub install can pick up new versions.
-The current CLI does not cross subnets, does not deploy to the public internet,
-and does not auto-upgrade itself.
+The current CLI does not cross subnets and does not deploy to the public
+internet; use `0kay-pm self-update` to update the CLI itself.

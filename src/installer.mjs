@@ -59,6 +59,18 @@ export function archiveUrl(repository,branch='main',tag=null){
  const ref=tag?`refs/tags/${tag}`:`refs/heads/${branch}`
  return `https://github.com/${match[1]}/${match[2]}/archive/${ref}.tar.gz`
 }
+/**
+ * npm install target for `0kay-pm self-update`: a local checkout, or the
+ * codeload tarball for a release tag / branch (optionally via the gh-proxy
+ * mirror). codeload is used because it survives networks where github.com is
+ * unreachable.
+ */
+export function selfUpdateTarget({source=null,version=null,branch='main',mirror=false}={}){
+ if(source)return path.resolve(source)
+ const ref=version?`v${String(version).replace(/^v/,'')}`:branch
+ const url=`https://codeload.github.com/RazureSOFT/0KAY-pm/tar.gz/${ref}`
+ return mirror?`https://gh-proxy.com/${url}`:url
+}
 /** Download a repository source archive and extract it into target (proxy aware, retried). */
 export async function downloadArchive(repository,target,options={}){
  const archive=archiveUrl(repository,'main',options.tag||null)
