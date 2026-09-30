@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import {shellQuote,cmdQuote,renderPosixWrapper,renderWindowsWrapper,renderSystemdUnit,renderLaunchdPlist} from '../src/service.mjs'
+import {shellQuote,cmdQuote,renderPosixWrapper,renderWindowsWrapper,renderWindowsLauncher,renderSystemdUnit,renderLaunchdPlist} from '../src/service.mjs'
 
 test('shellQuote wraps words and escapes single quotes',()=>{
  assert.equal(shellQuote('plain'),"'plain'")
@@ -35,6 +35,13 @@ test('renderWindowsWrapper sets env and runs the command',()=>{
  assert.match(wrapper,/set "CORE_HTTP_PORT=11412"/)
  assert.match(wrapper,/cd \/d "C:\\app"/)
  assert.match(wrapper,/"C:\\app\\core\.exe"/)
+})
+
+test('renderWindowsLauncher runs the wrapper with a hidden window',()=>{
+ const vbs=renderWindowsLauncher('C:\\Users\\u\\.0kay\\services\\0kay-core.cmd')
+ assert.ok(vbs.includes('WScript.Shell'),'uses WScript.Shell')
+ assert.ok(vbs.includes('"""C:\\Users\\u\\.0kay\\services\\0kay-core.cmd"""'),'quotes the wrapper path for Run')
+ assert.match(vbs,/, 0, False/,'window style 0 (hidden) and no wait')
 })
 
 test('renderSystemdUnit is a restart-on-failure user service',()=>{
