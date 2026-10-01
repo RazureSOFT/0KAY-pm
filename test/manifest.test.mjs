@@ -11,3 +11,11 @@ test('optional ui block shape is validated',()=>{
  assert.throws(()=>validateManifest({schema:1,name:'@razuresoft/x',version:'1',install:[],ui:{plugin:'../evil'}}))
  assert.throws(()=>validateManifest({schema:1,name:'@razuresoft/x',version:'1',install:[],ui:{build:'npm'}}))
 })
+test('permissions block shape is validated',()=>{
+ const ok=validateManifest({schema:1,name:'@razuresoft/x',version:'1',install:[],permissions:{api:{requires:['GET /api/models'],exposes:['agent.v1.AgentService/ExecuteTask']},egress:['api.example.com','127.0.0.1:8888']}})
+ assert.deepEqual(ok.permissions.egress,['api.example.com','127.0.0.1:8888'])
+ assert.throws(()=>validateManifest({schema:1,name:'@razuresoft/x',version:'1',install:[],permissions:'all'}))
+ assert.throws(()=>validateManifest({schema:1,name:'@razuresoft/x',version:'1',install:[],permissions:{egress:'example.com'}}))
+ assert.throws(()=>validateManifest({schema:1,name:'@razuresoft/x',version:'1',install:[],permissions:{api:{requires:['']}}}))
+ assert.throws(()=>validateManifest({schema:1,name:'@razuresoft/x',version:'1',install:[],permissions:{egress:['bad\nhost']}}))
+})

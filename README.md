@@ -155,6 +155,10 @@ as a dependency and arranges the `mcp/` and `proto/` sibling directories.
 Optional `ui`: `{ dir?, plugin?, dist?, build? }` — runs `build` in `dir` at the
 end of install and atomically publishes `dist` (default `dist`) to
 `${CORE_DATA_DIR||data}/plugin-ui/{plugin||package short name}/`.
+Optional `permissions`: `{ api?: { requires?: string[], exposes?: string[] },
+egress?: string[] }` declares the Core APIs the plugin calls/exposes and the
+hosts it may reach. Core enforces these for third-party plugins; first-party
+platform plugins are exempt.
 
 Commit the manifests in the umbrella and standalone Agent repositories before a
 GitHub install can pick up new versions.
