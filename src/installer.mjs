@@ -16,7 +16,6 @@ export const packages={
  '@razuresoft/0kay-mocr':{repository:'https://github.com/RazureSOFT/0KAY.git',manifest:'mocr/manifest.json'},
  '@razuresoft/0kay-mcp':{repository:'https://github.com/RazureSOFT/0KAY-mcp.git',manifest:'manifest.json'},
  '@razuresoft/0kay-webui':{repository:'https://github.com/RazureSOFT/0KAY.git',manifest:'webui/manifest.json'},
- '@razuresoft/0kay-searxng':{repository:'https://github.com/RazureSOFT/0KAY.git',manifest:'searxng/manifest.json'},
 }
 /** npm registry used to resolve third-party packages (override with OKAY_NPM_REGISTRY). */
 const REGISTRY=process.env.OKAY_NPM_REGISTRY||'https://registry.npmjs.org'
@@ -108,6 +107,18 @@ export function validateManifest(value){
   if(value.ui.plugin!=null&&(!/^[A-Za-z0-9_-]{1,64}$/.test(value.ui.plugin)))throw new Error('Manifest ui.plugin is invalid')
   if(value.ui.dist!=null&&(typeof value.ui.dist!=='string'||/[\r\n\0]/.test(value.ui.dist)))throw new Error('Manifest ui.dist must be a path string')
   if(value.ui.build!=null&&!Array.isArray(value.ui.build))throw new Error('Manifest ui.build must be argv arrays')
+ }
+ if(value.permissions!=null){
+  const text=entry=>typeof entry==='string'&&entry.trim()!==''&&!/[\r\n\0]/.test(entry)
+  const list=(arr,label)=>{if(!Array.isArray(arr)||arr.some(entry=>!text(entry)))throw new Error(`Manifest permissions.${label} must be non-empty strings`)}
+  if(typeof value.permissions!=='object'||value.permissions===null||Array.isArray(value.permissions))throw new Error('Manifest permissions must be an object')
+  const {api,egress}=value.permissions
+  if(api!=null){
+   if(typeof api!=='object'||api===null||Array.isArray(api))throw new Error('Manifest permissions.api must be an object')
+   if(api.requires!=null)list(api.requires,'api.requires')
+   if(api.exposes!=null)list(api.exposes,'api.exposes')
+  }
+  if(egress!=null)list(egress,'egress')
  }
  return value
 }
@@ -301,7 +312,7 @@ const cwd=effectiveName==='@razuresoft/0kay-agent'?path.join(staging,'agent'):pa
      }
      // Keep the previous tree as a recovery copy, including unlisted user files.
    }else await fs.rename(staging,destination)
-   const record={name:effectiveName,version:manifest.version,repository:spec.repository||manifest.repository||null,repositoryRoot:destination,cwd:path.join(destination,path.relative(staging,cwd)),start:manifest.start||null,modules:manifest.modules||[],installed_at:new Date().toISOString()}
+   const record={name:effectiveName,version:manifest.version,repository:spec.repository||manifest.repository||null,repositoryRoot:destination,cwd:path.join(destination,path.relative(staging,cwd)),start:manifest.start||null,modules:manifest.modules||[],permissions:manifest.permissions||null,installed_at:new Date().toISOString()}
   // Editable Python installs embed absolute paths. Rebind after atomic promotion.
   if(effectiveName==='@razuresoft/0kay-life')await run(['python','-m','pip','install','-e','.'],record.cwd)
   if(effectiveName==='@razuresoft/0kay'&&(manifest.modules||[]).includes('life/manifest.json'))await run(['python','-m','pip','install','-e','.'],path.join(destination,'life'))
