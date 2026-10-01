@@ -120,6 +120,18 @@ export function validateManifest(value){
   }
   if(egress!=null)list(egress,'egress')
  }
+ if(value.capabilities!=null){
+  const text=entry=>typeof entry==='string'&&entry.trim()!==''&&!/[\r\n\0]/.test(entry)
+  const strList=(arr,label)=>{if(!Array.isArray(arr)||arr.some(entry=>!text(entry)))throw new Error(`Manifest capabilities.${label} must be non-empty strings`)}
+  const objList=(arr,label,required)=>{if(!Array.isArray(arr))throw new Error(`Manifest capabilities.${label} must be an array`);for(const entry of arr){if(typeof entry!=='object'||entry===null||Array.isArray(entry))throw new Error(`Manifest capabilities.${label} entries must be objects`);for(const key of required)if(!text(entry[key]))throw new Error(`Manifest capabilities.${label}.${key} is required`);for(const key of ['name','description','prompt','event'])if(entry[key]!=null&&(typeof entry[key]!=='string'||/[\r\n\0]/.test(entry[key])))throw new Error(`Manifest capabilities.${label}.${key} must be a string`)}}
+  if(typeof value.capabilities!=='object'||value.capabilities===null||Array.isArray(value.capabilities))throw new Error('Manifest capabilities must be an object')
+  const {commands,skills,hooks,mcpServers,agents}=value.capabilities
+  if(commands!=null)objList(commands,'commands',['name','prompt'])
+  if(agents!=null)objList(agents,'agents',['name','prompt'])
+  if(hooks!=null){if(!Array.isArray(hooks))throw new Error('Manifest capabilities.hooks must be an array');for(const hook of hooks){if(typeof hook!=='object'||hook===null||Array.isArray(hook)||!text(hook.event))throw new Error('Manifest capabilities.hooks entries need an event');if(!Array.isArray(hook.command)||hook.command.some(arg=>typeof arg!=='string'||/[\r\n\0]/.test(arg))||!hook.command.length)throw new Error('Manifest capabilities.hooks.command must be a non-empty argv array')}}
+  if(mcpServers!=null){if(!Array.isArray(mcpServers))throw new Error('Manifest capabilities.mcpServers must be an array');for(const server of mcpServers){if(typeof server!=='object'||server===null||Array.isArray(server)||!text(server.id))throw new Error('Manifest capabilities.mcpServers entries need an id')}}
+  if(skills!=null)strList(skills,'skills')
+ }
  return value
 }
 /** Copy a built plugin UI bundle into CORE_DATA_DIR/plugin-ui/{name} (atomic replace). */
