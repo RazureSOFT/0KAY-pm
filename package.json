@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 {
   "name":"@razuresoft/0kay-pm",
   "version": "0.1.6",
@@ -8,3 +9,15 @@
   "scripts":{"test":"node --test test/*.test.mjs"},
   "license":"MIT"
 }
+=======
+{
+  "name":"@razuresoft/0kay-pm",
+  "version": "0.1.6",
+  "description":"0KAY modular package installer and LAN Core pairing client",
+  "type":"module",
+  "bin":{"0kay-pm":"bin/0kay-pm.mjs"},
+  "engines":{"node":">=22"},
+  "scripts":{"test":"node --test test/*.test.mjs"},
+  "license":"MIT"
+}
+>>>>>>> b28a5ea (fix(pm): keep module repositories on their default branch during a pinned platform update)
