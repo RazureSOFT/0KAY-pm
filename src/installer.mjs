@@ -271,7 +271,12 @@ export async function installPackage(name,options,state,stack=[]) {
    const target=within(staging,repository.path)
    if(!await fs.stat(path.join(target,'manifest.json')).then(()=>true,()=>false)){
      const spec=packages[repository.package];if(!spec||spec.repository!==repository.url)throw new Error('Unrecognized module repository')
-      await downloadArchive(repository.url,target,options)
+      // Module repositories version independently from the umbrella, so a
+      // platform `update @<version>` must not apply the platform tag to them:
+      // the umbrella manifest carries no per-module ref, meaning modules track
+      // their default branch. Pinning the umbrella tag here made `update
+      // @razuresoft/0kay@0.1.2` fetch `0KAY-mcp` at the non-existent v0.1.2 tag.
+      await downloadArchive(repository.url,target,{...options,tag:null})
    }
   }
   // A child manifest supplies build commands and cwd; repository layout stays intact.
