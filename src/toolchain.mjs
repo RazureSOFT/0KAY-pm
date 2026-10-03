@@ -17,7 +17,7 @@ import {downloadOnce,extractTarGz} from './download.mjs'
  * verification only with `OKAY_TOOLCHAIN_INSECURE=1`.
  */
 export const DEFAULT_VERSIONS={
- go:process.env.OKAY_GO_VERSION||process.env.OKAY_TOOLCHAIN_GO_VERSION||'1.23.4',
+  go:process.env.OKAY_GO_VERSION||process.env.OKAY_TOOLCHAIN_GO_VERSION||'1.27.0',
  node:process.env.OKAY_NODE_VERSION||process.env.OKAY_TOOLCHAIN_NODE_VERSION||'22.12.0',
  python:process.env.OKAY_PYTHON_VERSION||process.env.OKAY_TOOLCHAIN_PYTHON_VERSION||'3.12.7',
 }
