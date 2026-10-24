@@ -448,6 +448,7 @@ const HELP = [
   '  0kay-pm install                install everything locally (same as: install 0kay)',
   '  0kay-pm install <name>         short names: 0kay core webui life mocr agent mcp',
   '  0kay-pm install <name>@1.2.3   pin a release tag',
+  '  0kay-pm install @<path>        install from a local checkout (its manifest.json names it)',
   '',
   'run it:',
   '  0kay-pm start <name> [--foreground]    stop <name>    status <name>    uninstall <name>',
