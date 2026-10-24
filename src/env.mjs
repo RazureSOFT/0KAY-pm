@@ -1,11 +1,21 @@
+const MIN_PORT = 1
+const MAX_PORT = 65535
+
+const CORE_PACKAGES = new Set(['@razuresoft/0kay', '@razuresoft/0kay-core'])
+const WEBUI_PACKAGES = new Set(['@razuresoft/0kay', '@razuresoft/0kay-webui'])
+
 export function parsePort(name, value) {
   if (value == null) return null
   const port = Number(value)
-  if (!Number.isInteger(port) || port < 1 || port > 65535)
-    throw new Error(`${name} requires a port between 1 and 65535`)
+  if (!Number.isInteger(port) || port < MIN_PORT || port > MAX_PORT) {
+    throw new Error(`${name} requires a port between ${MIN_PORT} and ${MAX_PORT}`)
+  }
   return port
 }
 
+// A paired install talks to a Core on another machine, so it must not pin the
+// loopback addresses: the pairing record already carries the real ones, and an
+// env file that overrides them sends the plugins to the wrong box.
 export function portEnv(ports, paired) {
   const env = {}
   if (ports.http != null) {
@@ -20,17 +30,12 @@ export function portEnv(ports, paired) {
   return env
 }
 
-/**
- * Bind address for Core and/or WebUI when the user opts to expose them.
- * `0.0.0.0` listens on every interface; empty/undefined keeps loopback.
- */
+// Only the packages that actually open a listener get a bind host. Setting it
+// on a plugin would be harmless, but it reads like the plugin is exposed.
 export function bindEnv(host, name) {
   const env = {}
   if (!host) return env
-  const core = name === '@razuresoft/0kay' || name === '@razuresoft/0kay-core'
-  const webui = name === '@razuresoft/0kay' || name === '@razuresoft/0kay-webui'
-  if (core) env.CORE_BIND_HOST = host
-  if (webui) env.WEBUI_HOST = host
+  if (CORE_PACKAGES.has(name)) env.CORE_BIND_HOST = host
+  if (WEBUI_PACKAGES.has(name)) env.WEBUI_HOST = host
   return env
 }
-

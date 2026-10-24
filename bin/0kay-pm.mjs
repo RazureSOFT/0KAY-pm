@@ -3,261 +3,687 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import readline from 'node:readline/promises'
-import {randomInt} from 'node:crypto'
-import {discover,pinnedRequest,expandTargets,localSubnets} from '../src/discovery.mjs'
-import {installPackage,uninstallPackage,run,validateManifest,within,configureToolchains,resolveCommand,selfUpdateTarget} from '../src/installer.mjs'
-import {proxyAgentFor,latestReleaseTag} from '../src/download.mjs'
-import {toolchainBinDirs} from '../src/toolchain.mjs'
-import {installServices,stopServices,servicesStatus} from '../src/service.mjs'
-import {parsePort,portEnv,bindEnv} from '../src/env.mjs'
+import { randomInt } from 'node:crypto'
+import { discover, pinnedRequest, expandTargets, localSubnets } from '../src/discovery.mjs'
+import {
+  installPackage,
+  uninstallPackage,
+  run,
+  validateManifest,
+  within,
+  configureToolchains,
+  resolveCommand,
+  selfUpdateTarget,
+  restrictToUser,
+  verifySourceChecksum,
+} from '../src/installer.mjs'
+import { parseTarget as parseInstallTarget, readLocalName } from '../src/target.mjs'
+import { proxyAgentFor, latestReleaseTag, downloadOnce } from '../src/download.mjs'
+import { toolchainBinDirs } from '../src/toolchain.mjs'
+import { installServices, stopServices, servicesStatus } from '../src/service.mjs'
+import { parsePort, portEnv, bindEnv } from '../src/env.mjs'
+import { detectRegion, mirrorsFor, normalizeRegion, probeFastest } from '../src/region.mjs'
+import { configureToolchainSources } from '../src/toolchain.mjs'
+import { configureRegistry } from '../src/manifest.mjs'
 
-const args=process.argv.slice(2)
-if(args[0]?.startsWith('install@'))args.splice(0,1,'install',args[0].slice(7))
-const home=process.env.OKAY_PM_HOME||path.join(os.homedir(),'.0kay')
-await fs.mkdir(home,{recursive:true,mode:0o700})
-const statePath=path.join(home,'state.json')
-let state={cores:{},installed:{},pairings:{}}
-try{state={...state,...JSON.parse(await fs.readFile(statePath,'utf8'))}}catch(error){if(error.code!=='ENOENT')throw error}
-const save=async()=>{await fs.writeFile(statePath+'.tmp',JSON.stringify(state,null,2),{mode:0o600});await fs.rename(statePath+'.tmp',statePath)}
-const ask=async question=>{if(!process.stdin.isTTY)throw new Error('Interactive terminal required for pairing');const rl=readline.createInterface({input:process.stdin,output:process.stdout});try{return(await rl.question(question)).trim()}finally{rl.close()}}
-const flag=name=>{const index=args.indexOf(name);return index<0?null:args[index+1]}
-/** package[@version] → {name, version}; --version flags the same pin. */
-function parseTarget(raw){
- if(!raw||raw.startsWith('-'))return {name:raw||null,version:flag('--version')}
- const at=raw.lastIndexOf('@')
- const name=at>0?raw.slice(0,at):raw
- const version=at>0?raw.slice(at+1):flag('--version')
- return {name,version:version?version.replace(/^v/,''):null}
+// 0kay-pm: install 0KAY packages on this machine and wire them to a Core.
+//
+// The interesting part is not installing — it is the two things around it:
+// pairing with a Core on the LAN without trusting whatever answers the broadcast,
+// and writing a runtime-env.json the services can start from on boot without a
+// human in the loop.
+
+const HOME = process.env.OKAY_PM_HOME || path.join(os.homedir(), '.0kay')
+const STATE_FILE = path.join(HOME, 'state.json')
+const CORE_PACKAGES = new Set(['@razuresoft/0kay', '@razuresoft/0kay-core'])
+
+const argv = process.argv.slice(2)
+// `0kay-pm install@foo` is a thing people type; accept it.
+if (argv[0]?.startsWith('install@')) argv.splice(0, 1, 'install', argv[0].slice(7))
+
+const flag = (name) => {
+  const index = argv.indexOf(name)
+  return index < 0 ? null : argv[index + 1]
 }
-const coreDataRoot=()=>path.join(state.installed['@razuresoft/0kay']?.repositoryRoot||path.join(home,'packages','0kay'),'core','data')
-/** --proxy alone mirrors via gh-proxy.com; --proxy host:port tunnels through that proxy. */
-const proxyValue=flag('--proxy')
-const proxyUrl=proxyValue&&!proxyValue.startsWith('--')&&/[:/]/.test(proxyValue)?proxyValue:null
-const proxyMirror=args.includes('--proxy')&&!proxyUrl
-/** Mirror prefix for 0kay-pm's own downloads: OKAY_GITHUB_PROXY (set by Core) or --proxy. */
-const githubMirror=(process.env.OKAY_GITHUB_PROXY||'').trim().replace(/\/+$/,'')||(proxyMirror?'https://gh-proxy.com':'')
-// Missing build toolchains (go/node/python) are downloaded into ~/.0kay/toolchains
-// by default. --no-toolchain-download or OKAY_TOOLCHAIN_DOWNLOAD=0 disables it.
-const allowToolchainDownload=!args.includes('--no-toolchain-download')&&process.env.OKAY_TOOLCHAIN_DOWNLOAD!=='0'
-let toolchainAgent=null
-try{toolchainAgent=proxyAgentFor({proxyUrl})}catch{toolchainAgent=null}
-// Forward --proxy to build tools (go module proxy, pip, npm) as well.
-const buildProxy=proxyUrl?(String(proxyUrl).includes('://')?String(proxyUrl):`http://${proxyUrl}`):null
-configureToolchains({home,allowDownload:allowToolchainDownload,agent:toolchainAgent,proxy:buildProxy})
-const askPort=async(label,def)=>{while(true){const raw=await ask(`${label} [${def}]: `);if(!raw)return def;try{return parsePort(label,raw)}catch(error){console.log(error.message)}}}
-/** Ports are asked interactively during install; flags override for scripts. */
-async function portChoices(name){
- const choices={}
- const wantsCore=name==='@razuresoft/0kay'||name==='@razuresoft/0kay-core'
- const wantsWebui=name==='@razuresoft/0kay'||name==='@razuresoft/0kay-webui'
- if(process.stdin.isTTY){
-  if(wantsCore&&flag('--core-port')==null)choices.http=await askPort('Core HTTP port',8080)
-  if(wantsCore&&flag('--core-grpc-port')==null)choices.grpc=await askPort('Core gRPC port',50051)
-  if(wantsWebui&&flag('--webui-port')==null)choices.webui=await askPort('WebUI port',3000)
- }
- if(choices.http==null)choices.http=parsePort('--core-port',flag('--core-port'))
- if(choices.grpc==null)choices.grpc=parsePort('--core-grpc-port',flag('--core-grpc-port'))
- if(choices.webui==null)choices.webui=parsePort('--webui-port',flag('--webui-port'))
- if(wantsCore||wantsWebui){
-  const bindFlag=flag('--bind-host')
-  if(bindFlag!=null)choices.bindHost=bindFlag
-  else if(args.includes('--expose'))choices.bindHost='0.0.0.0'
-  else if(args.includes('--no-expose'))choices.bindHost=null
-  else if(process.stdin.isTTY){
-   const answer=(await ask('Expose Core and WebUI on 0.0.0.0 (reachable from other devices, no authentication)? [y/N] ')).toLowerCase()
-   choices.bindHost=answer==='y'||answer==='yes'?'0.0.0.0':null
-  }else choices.bindHost=null
- }
- return choices
+const has = (name) => argv.includes(name)
+
+await fs.mkdir(HOME, { recursive: true, mode: 0o700 })
+
+let state = { cores: {}, installed: {}, pairings: {} }
+try {
+  state = { ...state, ...JSON.parse(await fs.readFile(STATE_FILE, 'utf8')) }
+} catch (error) {
+  if (error.code !== 'ENOENT') throw error
 }
-async function scan(extraTargets=[],timeout,maxHosts,broadcast=true){const remembered=broadcast?Object.values(state.cores||{}).map(core=>core.host).filter(Boolean):[];const targets=[...new Set([...extraTargets,...remembered])];const cores=await discover(timeout,expandTargets(targets,maxHosts),{broadcast});for(const core of cores){const old=state.cores[core.id];if(old&&old.fingerprint!==core.fingerprint)core.identity_changed=true;state.cores[core.id]=core}await save();return cores}
-/**
- * Extra discovery targets: positional IPs, --host <ip> (repeatable),
- * --subnet <cidr> (repeatable), --lan (every local subnet), OKAY_DISCOVER_HOSTS.
- */
-function discoverTargets(rest){
- const out=[]
- for(let i=0;i<rest.length;i++){
-  const value=rest[i]
-  if(value==='--lan'){out.push(...localSubnets());continue}
-  if(value==='--host'||value==='--subnet'){const next=rest[i+1];if(next&&!next.startsWith('--')){out.push(next);i++}continue}
-  if(value==='--timeout'||value==='--max-hosts'){i++;continue}
-  if(value.startsWith('--'))continue
-  out.push(value)
- }
- for(const value of String(process.env.OKAY_DISCOVER_HOSTS||'').split(','))if(value.trim())out.push(value.trim())
- return out
+
+async function saveState() {
+  await fs.writeFile(`${STATE_FILE}.tmp`, JSON.stringify(state, null, 2), { mode: 0o600 })
+  await fs.rename(`${STATE_FILE}.tmp`, STATE_FILE)
 }
-async function pair(cores){
- if(!cores.length){console.log('No LAN Core discovered. Start Core with CORE_LAN_ENABLED=1; UDP 50050 and TLS 8443/5443 must be reachable.');return null}
- cores.forEach((core,index)=>console.log(`${index+1}. ${core.name} ${core.host} [${core.id}] fingerprint ${core.fingerprint}${core.identity_changed?' CHANGED':''}`))
- const selected=flag('--core')?cores.find(core=>core.id===flag('--core')):cores[Number(await ask('Choose Core number (Enter skips pairing): '))-1]
- if(!selected)return null
- if(selected.identity_changed)throw new Error('Core identity changed; investigate before pairing')
- if(state.pairings[selected.id])return {...selected,...state.pairings[selected.id]}
- if((await ask(`Pair with ${selected.name} (${selected.host})? [y/N] `)).toLowerCase()!=='y')return null
- const request=await pinnedRequest(selected,'/api/pairing/request',{name:os.hostname()})
- console.log(`Pairing code: ${request.code}. On the Core computer open Settings → Devices and approve this same code. Waiting up to five minutes.`)
- const deadline=Date.now()+300000
- while(Date.now()<deadline){await new Promise(resolve=>setTimeout(resolve,1500));const result=await pinnedRequest(selected,'/api/pairing/status',{id:request.id,secret:request.secret});if(result.approved){
-  const cert=path.join(home,`core-${selected.id}.crt`);await fs.writeFile(cert,result.certificate,{mode:0o600})
-  state.pairings[selected.id]={token:result.token,certificate:cert,server_name:result.server_name};await save();return {...selected,...state.pairings[selected.id]}
- }}throw new Error('Pairing timed out')
-}
-async function configure(record,core,choices){
- const env={}
- if(core){const interfaces=Object.values(os.networkInterfaces()).flat().filter(value=>value&&value.family==='IPv4'&&!value.internal);const address=flag('--advertise')||interfaces.find(value=>value.address.split('.').slice(0,3).join('.')===core.host.split('.').slice(0,3).join('.'))?.address
-  if(!address)throw new Error('Cannot determine callback address; pass --advertise <LAN-IP>')
-   Object.assign(env,{CORE_ADDRESS:`${core.host}:${core.grpc_port}`,CORE_HTTP_ADDR:`https://${core.host}:${core.http_port}`,CORE_PAIR_TOKEN:core.token,CORE_TLS_CA:core.certificate,CORE_TLS_NAME:core.server_name,NODE_EXTRA_CA_CERTS:core.certificate,AGENT_ADDRESS:`${address}:50054`,AGENT_BIND_HOST:'0.0.0.0',MOCR_ADDRESS:`${core.host}:${core.grpc_port}`})
+
+async function ask(question) {
+  if (!process.stdin.isTTY) throw new Error('Interactive terminal required for pairing')
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    return (await rl.question(question)).trim()
+  } finally {
+    rl.close()
   }
-  Object.assign(env,portEnv(choices,Boolean(core)))
-  Object.assign(env,bindEnv(choices.bindHost,record.name))
-  if(choices.bindHost)console.log(`Exposing Core and WebUI on ${choices.bindHost}; they will be reachable from the network without authentication.`)
-  if(record.name==='@razuresoft/0kay'||record.name==='@razuresoft/0kay-core'){env.CORE_LAN_ENABLED='1';env.CORE_PIN=randomPin()}
- await fs.writeFile(path.join(record.repositoryRoot,'runtime-env.json'),JSON.stringify(env,null,2),{mode:0o600})
- return env.CORE_PIN
 }
-/** Six-digit initial access PIN for Core (printed after install). */
-function randomPin(){return String(randomInt(100000,1000000))}
-/** One service per runnable module (or the package itself), named 0kay-<short>. */
-async function packageUnits(record,env,{resolve=false}={}){
- const specs=[]
- const short=name=>name.split('/')[1].replace(/^0kay-/,'')
- if((record.modules||[]).length){
-  for(const relative of record.modules){
-   try{
-    const manifestPath=within(record.repositoryRoot,relative)
-    const manifest=validateManifest(JSON.parse(await fs.readFile(manifestPath,'utf8')))
-    if(manifest.start)specs.push({name:`0kay-${short(manifest.name)}`,command:manifest.start,cwd:path.dirname(manifestPath)})
-   }catch{/* module removed or unreadable */}
+
+// Versions, scoped names and local trees all arrive as one string; src/target.mjs
+// owns the rules and this is the thin call.
+function parseTarget(raw) {
+  return parseInstallTarget(raw, { versionFlag: flag('--version') })
+}
+
+// Short names, because `0kay-pm install 0kay` is what people actually type.
+// The full package names still work; these are just the front door.
+const ALIASES = {
+  '0kay': '@razuresoft/0kay',
+  core: '@razuresoft/0kay-core',
+  webui: '@razuresoft/0kay-webui',
+  life: '@razuresoft/0kay-life',
+  mocr: '@razuresoft/0kay-mocr',
+  agent: '@razuresoft/0kay-agent',
+  mcp: '@razuresoft/0kay-mcp',
+}
+
+function canonicalName(name) {
+  if (!name) return name
+  if (ALIASES[name]) return ALIASES[name]
+  if (ALIASES[name.replace(/^0kay-/, '')]) return ALIASES[name.replace(/^0kay-/, '')]
+  return name
+}
+
+const coreDataRoot = () => path.join(
+  state.installed['@razuresoft/0kay']?.repositoryRoot || path.join(HOME, 'packages', '0kay'),
+  'core',
+  'data',
+)
+
+// --proxy alone means "go through the gh-proxy mirror"; --proxy host:port (or a
+// URL) means "tunnel through that proxy". Two different things, one flag,
+// because that is how the docs read.
+const proxyValue = flag('--proxy')
+const proxyUrl = proxyValue && !proxyValue.startsWith('--') && /[:/]/.test(proxyValue) ? proxyValue : null
+const proxyMirror = has('--proxy') && !proxyUrl
+
+// Where this machine is decides the default source for everything we download.
+// A VPN makes the timezone a liar, so --mirror / --no-mirror / OKAY_REGION
+// override the guess, and `0kay-pm mirror --probe` settles it with a race.
+const mirrorValue = flag('--mirror')
+const explicitMirrorUrl = has('--mirror') && mirrorValue && !mirrorValue.startsWith('--') && /[:/]/.test(mirrorValue)
+  ? mirrorValue.replace(/\/+$/, '')
+  : null
+const detected = detectRegion()
+const forcedRegion = normalizeRegion(flag('--region'))
+const region = has('--no-mirror')
+  ? 'global'
+  : (has('--mirror') || proxyMirror ? 'cn' : (forcedRegion || detected.region))
+const mirrors = mirrorsFor(region)
+const githubMirror = explicitMirrorUrl
+  || (has('--no-mirror') ? '' : mirrors.github)
+  || (proxyMirror ? 'https://gh-proxy.com' : '')
+
+configureToolchainSources({ go: mirrors.go, node: mirrors.node, python: mirrors.python })
+configureRegistry(mirrors.npm)
+const allowToolchainDownload = !has('--no-toolchain-download') && process.env.OKAY_TOOLCHAIN_DOWNLOAD !== '0'
+
+let toolchainAgent = null
+try {
+  toolchainAgent = proxyAgentFor({ proxyUrl })
+} catch {
+  toolchainAgent = null
+}
+const buildProxy = proxyUrl ? (String(proxyUrl).includes('://') ? String(proxyUrl) : `http://${proxyUrl}`) : null
+configureToolchains({ home: HOME, allowDownload: allowToolchainDownload, agent: toolchainAgent, proxy: buildProxy })
+
+async function askPort(label, fallback) {
+  for (;;) {
+    const raw = await ask(`${label} [${fallback}]: `)
+    if (!raw) return fallback
+    try {
+      return parsePort(label, raw)
+    } catch (error) {
+      console.log(error.message)
+    }
   }
- }else if(record.start)specs.push({name:`0kay-${short(record.name)}`,command:record.start,cwd:record.cwd})
- const binDirs=await toolchainBinDirs(home)
- const units=[]
- for(const spec of specs)units.push({name:spec.name,command:resolve?await resolveCommand(spec.command,spec.cwd,home):spec.command,cwd:spec.cwd,env:env||{},binDirs})
- return units
 }
-/** Install/start daemonized services that survive the terminal and boot later. */
-async function startServices(record){
- const env=JSON.parse(await fs.readFile(path.join(record.repositoryRoot,'runtime-env.json'),'utf8').catch(()=>'{}'))
- const units=await packageUnits(record,env,{resolve:true})
- if(!units.length){console.log('Library/UI package; no service to start.');return}
- const {backend}=await installServices({home,units})
- console.log(`Started ${units.map(unit=>unit.name).join(', ')} via ${backend}. They keep running after this session ends and start on boot.`)
- console.log(`Stop with: 0kay-pm stop ${record.name}`)
-}
-/** Stop and disable every service owned by a package. */
-async function stopPackage(name){
- const record=state.installed[name];if(!record)throw new Error(`${name} is not installed`)
- const units=await packageUnits(record,null)
- await stopServices({home,names:units.map(unit=>unit.name)})
- console.log(`Stopped ${units.map(unit=>unit.name).join(', ')||'(no services)'}.`)
-}
-async function printStatus(name){
- const record=state.installed[name];if(!record)throw new Error(`${name} is not installed`)
- const units=await packageUnits(record,null)
- const rows=await servicesStatus({home,names:units.map(unit=>unit.name)})
- for(const row of rows)console.log(`${row.name}\t${row.state}`)
-}
-/** Run in the terminal (blocking); only with --foreground for debugging. */
-async function startForeground(record){
- const env=JSON.parse(await fs.readFile(path.join(record.repositoryRoot,'runtime-env.json'),'utf8').catch(()=>'{}'))
- const units=await packageUnits(record,env)
- if(!units.length){console.log('Library/UI package; no standalone process.');return}
- console.log(`Starting ${record.name} in this terminal; press Ctrl+C to stop.`)
- await Promise.all(units.map(unit=>run(unit.command,unit.cwd,env)))
-}
-/** Current CLI version, read from the package.json next to this script. */
-async function cliVersion(){
- try{return JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8')).version||'?'}catch{return '?'}
-}
-/**
- * Update the 0kay-pm CLI itself. A running global package cannot be swapped by
- * `update` (the package is not in state.json), so reinstall it with npm:
- *  0kay-pm self-update [<version>] [--version <v>] [--beta|--main] [--source <dir>] [--proxy]
- * Defaults to the latest published release, falling back to the main branch.
- */
-async function selfUpdate(){
- const source=flag('--source')
- const raw=args[1]&&!args[1].startsWith('-')?args[1]:null
- const pinned=(raw?parseTarget(raw).version:null)||flag('--version')
- const beta=args.includes('--beta')||args.includes('--main')
- const current=await cliVersion()
- let target,label
- if(source){
-  label=path.resolve(source)
-  target=selfUpdateTarget({source})
- }else{
-  let version=pinned?String(pinned).replace(/^v/,''):null
-  if(!version&&!beta){
-   const tag=await latestReleaseTag('RazureSOFT','0KAY-pm',{mirror:githubMirror,proxyUrl})
-   if(tag)version=tag.replace(/^v/,'')
+
+// Defaults are the point: a local install should be one command and zero
+// questions. --interactive brings the prompts back for people who want to pick.
+async function portChoices(name, { interactive = false } = {}) {
+  const choices = {}
+  const wantsCore = CORE_PACKAGES.has(name)
+  const wantsWebui = name === '@razuresoft/0kay' || name === '@razuresoft/0kay-webui'
+
+  if (interactive && process.stdin.isTTY) {
+    if (wantsCore && flag('--core-port') == null) choices.http = await askPort('Core HTTP port', 8080)
+    if (wantsCore && flag('--core-grpc-port') == null) choices.grpc = await askPort('Core gRPC port', 50051)
+    if (wantsWebui && flag('--webui-port') == null) choices.webui = await askPort('WebUI port', 3000)
   }
-  label=version?`v${version}`:'main'
-  target=selfUpdateTarget({version,mirror:githubMirror})
- }
- console.log(`Updating 0kay-pm ${current} → ${label} (npm install -g).`)
- await run(['npm','install','-g',target],process.cwd())
- console.log(`0kay-pm updated to ${label}. Re-run your command to use the new version.`)
+  choices.http ??= parsePort('--core-port', flag('--core-port'))
+  choices.grpc ??= parsePort('--core-grpc-port', flag('--core-grpc-port'))
+  choices.webui ??= parsePort('--webui-port', flag('--webui-port'))
+
+  if (wantsCore || wantsWebui) {
+    const bindFlag = flag('--bind-host')
+    if (bindFlag != null) choices.bindHost = bindFlag
+    else if (has('--expose')) choices.bindHost = '0.0.0.0'
+    else if (has('--no-expose')) choices.bindHost = null
+    else if (interactive && process.stdin.isTTY) {
+      const answer = (await ask('Expose Core and WebUI on 0.0.0.0 (reachable from other devices, no authentication)? [y/N] ')).toLowerCase()
+      choices.bindHost = answer === 'y' || answer === 'yes' ? '0.0.0.0' : null
+    } else {
+      choices.bindHost = null
+    }
+  }
+  return choices
 }
-try{
- switch(args[0]){
- case 'discover':{
-  const explicit=discoverTargets(args.slice(1))
-  // Explicit targets query only those hosts; a bare discover also broadcasts.
-  const cores=await scan(explicit,Number(flag('--timeout'))||undefined,Number(flag('--max-hosts'))||undefined,explicit.length===0)
-  console.log(JSON.stringify(cores,null,2))
-  if(explicit.length&&!cores.length)console.error('No Core answered at the requested target(s). Ensure the target runs Core with CORE_LAN_ENABLED=1 and UDP 50050 is reachable.')
-  break
- }
- case 'cores':console.log(JSON.stringify(state.cores,null,2));break
- case 'install':{
-  const cores=await scan(); // Mandatory discovery before every install, even offline/local.
-  const target=parseTarget(args[1]);if(!target.name)throw new Error('Usage: 0kay-pm install <package>[@version] [--proxy] [--source <local-tree>] [--no-pair]')
-  const core=args.includes('--no-pair')?null:await pair(cores)
-  const choices=await portChoices(target.name)
-  console.log(`Installing ${target.name}${target.version?`@${target.version}`:''}. Package manifests run build/install commands from the selected repository.`)
-  const record=await installPackage(target.name,{home,source:flag('--source'),mirror:githubMirror,proxyUrl,tag:target.version?`v${target.version}`:null,coreData:coreDataRoot()},state)
-   await configure(record,core,choices);await save();console.log(`Installed ${record.name}@${record.version}.`)
-   if(args.includes('--foreground'))await startForeground(record);else await startServices(record);
-   if(record.name==='@razuresoft/0kay'||record.name==='@razuresoft/0kay-core'){const pin=JSON.parse(await fs.readFile(path.join(record.repositoryRoot,'runtime-env.json'),'utf8')).CORE_PIN;if(pin)console.log(`\n  Access PIN: ${pin}\n  Use this PIN to sign in to Core; change it in the setup wizard.\n`)}
-   break
- }
- case 'update':{
-  const target=parseTarget(args[1]);if(!target.name)throw new Error('Usage: 0kay-pm update <package>[@version] [--proxy] [--source <local-tree>]')
-  if(target.name==='@razuresoft/0kay-pm'||target.name==='0kay-pm'){await selfUpdate();break}
-  if(!state.installed[target.name])throw new Error(`${target.name} is not installed`)
-  console.log(`Updating ${target.name}${target.version?`@${target.version}`:' to the latest main branch'}.`)
-  const record=await installPackage(target.name,{home,source:flag('--source'),mirror:githubMirror,proxyUrl,reinstall:true,tag:target.version?`v${target.version}`:null,coreData:coreDataRoot()},state)
-  await save();console.log(`Updated ${record.name}@${record.version}. Start: 0kay-pm start ${record.name}`);break
- }
- case 'start':{
-  const record=state.installed[args[1]];if(!record)throw new Error('Package not installed')
-   if(args.includes('--foreground'))await startForeground(record);else await startServices(record)
-  break
- }
- case 'stop':{
-  const name=args[1];if(!name)throw new Error('Usage: 0kay-pm stop <package>')
-  await stopPackage(name);break
- }
- case 'uninstall':{
-  const name=args[1];if(!name)throw new Error('Usage: 0kay-pm uninstall <package>')
-  if(!state.installed[name])throw new Error(`${name} is not installed`)
-  await stopPackage(name).catch(()=>{})
-  const result=await uninstallPackage(name,{home,coreData:coreDataRoot()},state)
-  await save()
-  console.log(`Uninstalled ${result.name}${result.removed.length?`; removed ${result.removed.join(', ')}`:''}${result.removedTree?'':'; kept source tree in place'}.`)
-  break
- }
- case 'status':{
-  const name=args[1];if(!name)throw new Error('Usage: 0kay-pm status <package>')
-  await printStatus(name);break
- }
- case 'self-update':
- case 'selfupdate':
- case 'upgrade':{
-  await selfUpdate();break
- }
-  default:console.log('0kay-pm self-update [<version>] [--version <v>] [--beta | --main] [--source <local-tree>] [--proxy]\n0kay-pm uninstall <package>\n0kay-pm install <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-pair] [--no-toolchain-download] [--expose | --bind-host <addr> | --no-expose] [--core-port <n>] [--core-grpc-port <n>] [--webui-port <n>]\n0kay-pm update <package>[@version] [--proxy [host:port]] [--source <local-tree>] [--no-toolchain-download]\n0kay-pm start <package> [--foreground]\n0kay-pm stop <package>\n0kay-pm status <package>\n0kay-pm discover [ip ...] [--host <ip>] [--subnet <cidr>] [--lan] [--timeout <ms>] [--max-hosts <n>]\n0kay-pm cores\nInstall/start register services that keep running after the session ends and start on boot; only `stop` shuts them down. --foreground runs in this terminal instead.\nPorts are asked interactively on install; the flags override for scripts.\n--proxy alone downloads via the gh-proxy.com mirror; with host:port or a URL it tunnels through that HTTP proxy. HTTPS_PROXY is honored too.\nThird-party packages resolve via the npm registry (repository field), else a GitHub owner/repo name; --source <local-tree> installs a local checkout of any package.\nMissing go/node/python build toolchains are downloaded to ~/.0kay/toolchains; --no-toolchain-download disables that.\nCore/WebUI installs ask whether to listen on 0.0.0.0; --expose enables it, --bind-host <addr> overrides, --no-expose skips the prompt.')
- }
-}catch(error){console.error(error.message);process.exitCode=1}
+
+async function scan(extraTargets = [], timeout, maxHosts, broadcast = true) {
+  // Remembered hosts are retried explicitly: broadcast is blocked on a lot of
+  // corporate and guest networks, and re-pairing every time is hostile.
+  const remembered = broadcast ? Object.values(state.cores || {}).map((core) => core.host).filter(Boolean) : []
+  const targets = [...new Set([...extraTargets, ...remembered])]
+  const cores = await discover(timeout, expandTargets(targets, maxHosts), { broadcast })
+  for (const core of cores) {
+    const known = state.cores[core.id]
+    if (known && known.fingerprint !== core.fingerprint) core.identity_changed = true
+    state.cores[core.id] = core
+  }
+  await saveState()
+  return cores
+}
+
+function discoverTargets(rest) {
+  const out = []
+  for (let index = 0; index < rest.length; index++) {
+    const value = rest[index]
+    if (value === '--lan') {
+      out.push(...localSubnets())
+      continue
+    }
+    if (value === '--host' || value === '--subnet') {
+      const next = rest[index + 1]
+      if (next && !next.startsWith('--')) {
+        out.push(next)
+        index++
+      }
+      continue
+    }
+    if (value === '--timeout' || value === '--max-hosts') {
+      index++
+      continue
+    }
+    if (value.startsWith('--')) continue
+    out.push(value)
+  }
+  for (const value of String(process.env.OKAY_DISCOVER_HOSTS || '').split(',')) {
+    if (value.trim()) out.push(value.trim())
+  }
+  return out
+}
+
+async function pair(cores, { confirm = true } = {}) {
+  if (!cores.length) {
+    console.log('No LAN Core discovered. Start Core with CORE_LAN_ENABLED=1; UDP 50050 and TLS 8443/5443 must be reachable.')
+    return null
+  }
+  cores.forEach((core, index) => {
+    console.log(`${index + 1}. ${core.name} ${core.host} [${core.id}] fingerprint ${core.fingerprint}${core.identity_changed ? ' CHANGED' : ''}`)
+  })
+
+  const selected = flag('--core')
+    ? cores.find((core) => core.id === flag('--core'))
+    : cores[Number(await ask('Choose Core number (Enter skips pairing): ')) - 1]
+  if (!selected) return null
+  if (selected.identity_changed) throw new Error('Core identity changed; investigate before pairing')
+  if (state.pairings[selected.id]) return { ...selected, ...state.pairings[selected.id] }
+
+  if (confirm && (await ask(`Pair with ${selected.name} (${selected.host})? [y/N] `)).toLowerCase() !== 'y') return null
+
+  const request = await pinnedRequest(selected, '/api/pairing/request', { name: os.hostname() })
+  console.log(`Pairing code: ${request.code}. On the Core computer open Settings → Devices and approve this same code. Waiting up to five minutes.`)
+
+  const deadline = Date.now() + 300_000
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    const result = await pinnedRequest(selected, '/api/pairing/status', { id: request.id, secret: request.secret })
+    if (!result.approved) continue
+    const certificate = path.join(HOME, `core-${selected.id}.crt`)
+    await fs.writeFile(certificate, result.certificate, { mode: 0o600 })
+    state.pairings[selected.id] = { token: result.token, certificate, server_name: result.server_name }
+    await saveState()
+    return { ...selected, ...state.pairings[selected.id] }
+  }
+  throw new Error('Pairing timed out')
+}
+
+function randomPin() {
+  return String(randomInt(100000, 1000000))
+}
+
+async function configure(record, core, choices) {
+  const env = {}
+  if (core) {
+    const interfaces = Object.values(os.networkInterfaces()).flat()
+      .filter((value) => value && value.family === 'IPv4' && !value.internal)
+    const subnet = (address) => address.split('.').slice(0, 3).join('.')
+    const address = flag('--advertise') || interfaces.find((value) => subnet(value.address) === subnet(core.host))?.address
+    if (!address) throw new Error('Cannot determine callback address; pass --advertise <LAN-IP>')
+
+    const agentBindHost = has('--expose-lan') ? '0.0.0.0' : '127.0.0.1'
+    Object.assign(env, {
+      CORE_ADDRESS: `${core.host}:${core.grpc_port}`,
+      CORE_HTTP_ADDR: `https://${core.host}:${core.http_port}`,
+      CORE_PAIR_TOKEN: core.token,
+      CORE_TLS_CA: core.certificate,
+      CORE_TLS_NAME: core.server_name,
+      NODE_EXTRA_CA_CERTS: core.certificate,
+      AGENT_ADDRESS: `${address}:50054`,
+      AGENT_BIND_HOST: agentBindHost,
+      MOCR_ADDRESS: `${core.host}:${core.grpc_port}`,
+    })
+    if (has('--expose-lan')) {
+      console.log(`WARNING: agent gRPC bound to 0.0.0.0 on ${address}:50054; the channel is plaintext and protected only by its Bearer token.`)
+    }
+  }
+
+  Object.assign(env, portEnv(choices, Boolean(core)))
+  Object.assign(env, bindEnv(choices.bindHost, record.name))
+  if (choices.bindHost) console.log(`Exposing Core and WebUI on ${choices.bindHost}; they will be reachable from the network without authentication.`)
+  if (CORE_PACKAGES.has(record.name)) {
+    env.CORE_LAN_ENABLED = '1'
+    env.CORE_PIN = randomPin()
+  }
+
+  const envFile = path.join(record.repositoryRoot, 'runtime-env.json')
+  await fs.writeFile(envFile, JSON.stringify(env, null, 2), { mode: 0o600 })
+  await restrictToUser(envFile)
+  return env.CORE_PIN
+}
+
+async function packageUnits(record, env, { resolve = false } = {}) {
+  const specs = []
+  const shortName = (name) => name.split('/')[1].replace(/^0kay-/, '')
+
+  if ((record.modules || []).length) {
+    for (const relative of record.modules) {
+      try {
+        const manifestPath = within(record.repositoryRoot, relative)
+        const manifest = validateManifest(JSON.parse(await fs.readFile(manifestPath, 'utf8')))
+        if (manifest.start) {
+          specs.push({ name: `0kay-${shortName(manifest.name)}`, command: manifest.start, cwd: path.dirname(manifestPath) })
+        }
+      } catch {
+        // A module without a start command (library or UI only) has no unit.
+      }
+    }
+  } else if (record.start) {
+    specs.push({ name: `0kay-${shortName(record.name)}`, command: record.start, cwd: record.cwd })
+  }
+
+  const binDirs = await toolchainBinDirs(HOME)
+  const units = []
+  for (const spec of specs) {
+    units.push({
+      name: spec.name,
+      command: resolve ? await resolveCommand(spec.command, spec.cwd, HOME) : spec.command,
+      cwd: spec.cwd,
+      env: env || {},
+      binDirs,
+    })
+  }
+  return units
+}
+
+async function readRuntimeEnv(record) {
+  return JSON.parse(await fs.readFile(path.join(record.repositoryRoot, 'runtime-env.json'), 'utf8').catch(() => '{}'))
+}
+
+async function startServices(record) {
+  const env = await readRuntimeEnv(record)
+  const units = await packageUnits(record, env, { resolve: true })
+  if (!units.length) {
+    console.log('Library/UI package; no service to start.')
+    return
+  }
+  const { backend } = await installServices({ home: HOME, units })
+  console.log(`Started ${units.map((unit) => unit.name).join(', ')} via ${backend}. They keep running after this session ends and start on boot.`)
+  console.log(`Stop with: 0kay-pm stop ${record.name}`)
+}
+
+async function startForeground(record) {
+  const env = await readRuntimeEnv(record)
+  const units = await packageUnits(record, env)
+  if (!units.length) {
+    console.log('Library/UI package; no standalone process.')
+    return
+  }
+  console.log(`Starting ${record.name} in this terminal; press Ctrl+C to stop.`)
+  await Promise.all(units.map((unit) => run(unit.command, unit.cwd, env)))
+}
+
+async function stopPackage(name) {
+  const record = state.installed[name]
+  if (!record) throw new Error(`${name} is not installed`)
+  const units = await packageUnits(record, null)
+  await stopServices({ home: HOME, names: units.map((unit) => unit.name) })
+  console.log(`Stopped ${units.map((unit) => unit.name).join(', ') || '(no services)'}.`)
+}
+
+async function printStatus(name) {
+  const record = state.installed[name]
+  if (!record) throw new Error(`${name} is not installed`)
+  const units = await packageUnits(record, null)
+  if (!units.length) {
+    // A library/UI package has nothing to report, but silence reads as "the
+    // command is broken". Say so.
+    console.log(`${record.name} ${record.version}: no services (library/UI package)`)
+    return
+  }
+  for (const row of await servicesStatus({ home: HOME, names: units.map((unit) => unit.name) })) {
+    console.log(`${row.name}\t${row.state}`)
+  }
+}
+
+async function cliVersion() {
+  try {
+    return JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8')).version || '?'
+  } catch {
+    return '?'
+  }
+}
+
+async function selfUpdate() {
+  const source = flag('--source')
+  const raw = argv[1] && !argv[1].startsWith('-') ? argv[1] : null
+  const pinned = (raw ? parseTarget(raw).version : null) || flag('--version')
+  const beta = has('--beta') || has('--main')
+  const current = await cliVersion()
+
+  let target
+  let label
+  let version = null
+  if (source) {
+    label = path.resolve(source)
+    target = selfUpdateTarget({ source })
+  } else {
+    version = pinned ? String(pinned).replace(/^v/, '') : null
+    if (!version && !beta) {
+      const tag = await latestReleaseTag('RazureSOFT', '0KAY-pm', { mirror: githubMirror, proxyUrl })
+      if (tag) version = tag.replace(/^v/, '')
+    }
+    label = version ? `v${version}` : 'main'
+    target = selfUpdateTarget({ version, mirror: githubMirror })
+  }
+
+  console.log(`Updating 0kay-pm ${current} → ${label} (npm install -g).`)
+  if (target.startsWith('http')) {
+    const buffer = await downloadOnce(target, 5, proxyAgentFor({ proxyUrl }))
+    const warning = await verifySourceChecksum(
+      'https://github.com/RazureSOFT/0KAY-pm.git',
+      version ? `v${version}` : null,
+      buffer,
+      { mirror: githubMirror, proxyUrl },
+    )
+    if (warning) console.log(`Warning: ${warning}`)
+    const tarball = path.join(os.tmpdir(), `0kay-pm-${label.replace(/[^\w.-]+/g, '')}.tar.gz`)
+    await fs.writeFile(tarball, buffer, { mode: 0o600 })
+    try {
+      await run(['npm', 'install', '-g', tarball], process.cwd())
+    } finally {
+      await fs.rm(tarball, { force: true }).catch(() => {})
+    }
+  } else {
+    await run(['npm', 'install', '-g', target], process.cwd())
+  }
+  console.log(`0kay-pm updated to ${label}. Re-run your command to use the new version.`)
+}
+
+const HELP = [
+  'install:',
+  '  0kay-pm install                install everything locally (same as: install 0kay)',
+  '  0kay-pm install <name>         short names: 0kay core webui life mocr agent mcp',
+  '  0kay-pm install <name>@1.2.3   pin a release tag',
+  '',
+  'run it:',
+  '  0kay-pm start <name> [--foreground]    stop <name>    status <name>    uninstall <name>',
+  '',
+  'no questions asked:',
+  '  Ports default to 8080 / 50051 / 3000, Core binds to loopback, services start on',
+  '  boot. Override only what you need:',
+  '    --interactive            ask for ports and LAN exposure (the old behaviour)',
+  '    --core-port <n>  --core-grpc-port <n>  --webui-port <n>',
+  '    --expose | --bind-host <addr> | --no-expose',
+  '    --pair | --core <id>     install against a Core on another machine (LAN pairing)',
+  '    --expose-lan             bind the agent gRPC to 0.0.0.0 (plaintext, Bearer token only)',
+  '',
+  'network:',
+  '  Sources are picked from where this machine is: a Chinese timezone/locale gets',
+  '  the CN mirrors (gh-proxy, npmmirror, golang.google.cn), anything else goes',
+  '  direct. See `0kay-pm mirror`, override with:',
+  '    --mirror | --no-mirror   force mirrors on/off',
+  '    --region cn|global       override the guess (or OKAY_REGION=...)',
+  '    --mirror <url>           use that GitHub proxy instead of the default',
+  '  --proxy                  download through the gh-proxy.com mirror',
+  '  --proxy host:port        tunnel through that HTTP proxy (HTTPS_PROXY works too)',
+  '  --source <local-tree>    install a local checkout instead of a tarball',
+  '  --no-toolchain-download  never fetch go/node/python; use what is on PATH',
+  '',
+  'other:',
+  '  0kay-pm discover [ip ...] [--host <ip>] [--subnet <cidr>] [--lan] [--timeout <ms>]',
+  '  0kay-pm cores',
+  '  0kay-pm mirror [--probe]   show (or race) the download sources',
+  '  0kay-pm self-update [<version>] [--beta | --main] [--source <local-tree>]',
+  '',
+  'Services keep running after the session ends and start on boot; only `stop`',
+  'shuts them down. --foreground runs in this terminal instead.',
+].join('\n')
+
+// Pick a Core to pair with, or explain why there isn't one.
+//
+// The old flow asked "Choose Core number:" every single time, which is a wall in
+// front of the common case. Now: --core picks explicitly, one result is used,
+// several are listed for the user to re-run with --core <id>.
+async function chooseCore(cores) {
+  const wanted = flag('--core')
+  if (wanted) {
+    const match = cores.find((core) => core.id === wanted)
+    if (!match) throw new Error(`No Core with id ${wanted} on the LAN (run: 0kay-pm discover)`)
+    return pair(match, { confirm: false })
+  }
+  if (!cores.length) {
+    console.log('No Core on the LAN; installing standalone.')
+    return null
+  }
+  if (cores.length === 1) {
+    const [only] = cores
+    console.log(`Found Core ${only.name} at ${only.host} [${only.id}].`)
+    // Pairing needs a human on the other side to approve a code, so a headless
+    // run would just hang. Say what to do instead.
+    if (!process.stdin.isTTY) {
+      console.log('Not a terminal, so not pairing. Re-run with --pair when someone can approve the code.')
+      return null
+    }
+    return pair(only)
+  }
+  console.log(`${cores.length} Cores on the LAN; installing standalone. Pick one with --core <id>:`)
+  for (const core of cores) console.log(`  ${core.id}  ${core.name}  ${core.host}`)
+  return null
+}
+
+// --help anywhere means "tell me, do not do it". Without this guard
+// `0kay-pm self-update --help` cheerfully reinstalls the tool.
+if (argv.length === 0 || argv[0] === 'help' || has('--help') || has('-h')) {
+  console.log(HELP)
+  process.exit(0)
+}
+
+const commands = {
+  async discover() {
+    const explicit = discoverTargets(argv.slice(1))
+    const cores = await scan(
+      explicit,
+      Number(flag('--timeout')) || undefined,
+      Number(flag('--max-hosts')) || undefined,
+      explicit.length === 0,
+    )
+    console.log(JSON.stringify(cores, null, 2))
+    if (explicit.length && !cores.length) {
+      console.error('No Core answered at the requested target(s). Ensure the target runs Core with CORE_LAN_ENABLED=1 and UDP 50050 is reachable.')
+    }
+  },
+
+  async cores() {
+    console.log(JSON.stringify(state.cores, null, 2))
+  },
+
+  async install() {
+    // `0kay-pm install` with nothing else installs the whole thing locally.
+    const target = parseTarget(argv[1] && !argv[1].startsWith('-') ? argv[1] : '0kay')
+    // A local tree names itself: reading the manifest here means the record, the
+    // folder and the dependency walk all use the same identity.
+    if (target.source) {
+      target.name = readLocalName(target.source)
+      console.log(`Installing from ${target.source}`)
+    } else {
+      target.name = canonicalName(target.name)
+    }
+
+    // Always look for a Core on the LAN: finding one is how this machine joins an
+    // existing install, and silently ignoring it would be worse than the two
+    // seconds the broadcast costs. What we no longer do is make you pick a number
+    // from a list — one Core is used, several are listed, none means standalone.
+    const cores = has('--no-pair') ? [] : await scan()
+    const core = await chooseCore(cores)
+    const choices = await portChoices(target.name, { interactive: has('--interactive') })
+
+    console.log(`Installing ${target.name}${target.version ? `@${target.version}` : ''}. Package manifests run build/install commands from the selected repository.`)
+    const record = await installPackage(target.name, {
+      home: HOME,
+      source: target.source || flag('--source'),
+      mirror: githubMirror,
+      proxyUrl,
+      tag: target.version ? `v${target.version}` : null,
+      coreData: coreDataRoot(),
+    }, state)
+    await configure(record, core, choices)
+    await saveState()
+    console.log(`Installed ${record.name}@${record.version}.`)
+
+    if (has('--foreground')) await startForeground(record)
+    else await startServices(record)
+
+    if (CORE_PACKAGES.has(record.name)) {
+      const pin = JSON.parse(await fs.readFile(path.join(record.repositoryRoot, 'runtime-env.json'), 'utf8')).CORE_PIN
+      if (pin) console.log(`\n  Access PIN: ${pin}\n  Use this PIN to sign in to Core; change it in the setup wizard.\n`)
+    }
+  },
+
+  async update() {
+    const target = parseTarget(argv[1])
+    if (!target.name) throw new Error('Usage: 0kay-pm update <package>[@version] [--proxy] [--source <local-tree>]')
+    if (target.name === '@razuresoft/0kay-pm' || target.name === '0kay-pm') {
+      await selfUpdate()
+      return
+    }
+    target.name = canonicalName(target.name)
+    if (!state.installed[target.name]) throw new Error(`${target.name} is not installed`)
+    console.log(`Updating ${target.name}${target.version ? `@${target.version}` : ' to the latest main branch'}.`)
+    const record = await installPackage(target.name, {
+      home: HOME,
+      source: flag('--source'),
+      mirror: githubMirror,
+      proxyUrl,
+      reinstall: true,
+      tag: target.version ? `v${target.version}` : null,
+      coreData: coreDataRoot(),
+    }, state)
+    await saveState()
+    console.log(`Updated ${record.name}@${record.version}. Start: 0kay-pm start ${record.name}`)
+  },
+
+  async start() {
+    const record = state.installed[canonicalName(argv[1])]
+    if (!record) throw new Error('Package not installed')
+    if (has('--foreground')) await startForeground(record)
+    else await startServices(record)
+  },
+
+  async stop() {
+    const name = canonicalName(argv[1])
+    if (!name) throw new Error('Usage: 0kay-pm stop <package>')
+    await stopPackage(name)
+  },
+
+  async uninstall() {
+    const name = canonicalName(argv[1])
+    if (!name) throw new Error('Usage: 0kay-pm uninstall <package>')
+    if (!state.installed[name]) throw new Error(`${name} is not installed`)
+    await stopPackage(name).catch(() => {})
+    const result = await uninstallPackage(name, { home: HOME, coreData: coreDataRoot() }, state)
+    await saveState()
+    const removed = result.removed.length ? `; removed ${result.removed.join(', ')}` : ''
+    const kept = result.removedTree ? '' : '; kept source tree in place'
+    console.log(`Uninstalled ${result.name}${removed}${kept}.`)
+  },
+
+  async mirror() {
+    const probe = has('--probe')
+    const why = has('--no-mirror') ? 'forced off by --no-mirror'
+      : has('--mirror') || proxyMirror ? 'forced on by --mirror'
+        : forcedRegion ? 'forced by --region'
+          : detected.reason
+    console.log(`region: ${region} (${why})`)
+    console.log(`github: ${githubMirror || '(direct)'}`)
+    console.log(`npm:    ${mirrors.npm}`)
+    console.log(`go:     ${mirrors.go}`)
+    console.log(`node:   ${mirrors.node}`)
+    console.log(`python: ${mirrors.python}`)
+    if (!probe) {
+      console.log('\nOverride with --mirror | --no-mirror | --region cn|global, or OKAY_REGION / OKAY_GITHUB_PROXY.')
+      return
+    }
+    // The only honest test: ask both hosts and keep whichever answers first.
+    console.log('\nprobing (HEAD, 4s each)...')
+    const fastest = await probeFastest({
+      direct: 'https://github.com',
+      mirror: githubMirror || 'https://gh-proxy.com',
+    })
+    if (!fastest) {
+      console.log('neither answered; leaving the guess alone')
+      return
+    }
+    console.log(`${fastest.name} answered first in ${fastest.ms}ms`)
+    if (fastest.name === 'direct' && region === 'cn') {
+      console.log('direct is reachable — if this machine is on a VPN, use --no-mirror (or OKAY_REGION=global).')
+    }
+    if (fastest.name === 'mirror' && region === 'global') {
+      console.log('the mirror answered first — use --mirror (or OKAY_REGION=cn) to switch.')
+    }
+  },
+
+  async status() {
+    const name = canonicalName(argv[1])
+    if (!name) throw new Error('Usage: 0kay-pm status <package>')
+    await printStatus(name)
+  },
+
+  async 'self-update'() {
+    await selfUpdate()
+  },
+}
+commands.selfupdate = commands['self-update']
+commands.upgrade = commands['self-update']
+
+try {
+  const handler = commands[argv[0]]
+  if (handler) await handler()
+  else console.log(HELP)
+} catch (error) {
+  console.error(error.message)
+  process.exitCode = 1
+}
