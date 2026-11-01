@@ -101,7 +101,8 @@ export function downloadOnce(url, redirects = 5, agent = null, headers = {}) {
       reject(new Error(`Too many redirects: ${url}`))
       return
     }
-    const request = https.get(url, { timeout: DEFAULT_TIMEOUT_MS, agent, headers }, (response) => {
+    const transport = url.startsWith('http:') ? http : https
+    const request = transport.get(url, { timeout: DEFAULT_TIMEOUT_MS, agent, headers }, (response) => {
       const status = response.statusCode || 0
       const location = response.headers.location
       if (status >= 300 && status < 400 && location) {

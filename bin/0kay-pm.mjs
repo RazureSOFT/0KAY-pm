@@ -25,6 +25,7 @@ import { parsePort, portEnv, bindEnv } from '../src/env.mjs'
 import { detectRegion, mirrorsFor, normalizeRegion, probeFastest } from '../src/region.mjs'
 import { configureToolchainSources } from '../src/toolchain.mjs'
 import { configureRegistry } from '../src/manifest.mjs'
+import { installBundle } from '../src/bundle.mjs'
 
 // 0kay-pm: install 0KAY packages on this machine and wire them to a Core.
 //
@@ -322,7 +323,8 @@ async function packageUnits(record, env, { resolve = false } = {}) {
       }
     }
   } else if (record.start) {
-    specs.push({ name: `0kay-${shortName(record.name)}`, command: record.start, cwd: record.cwd })
+    // A release bundle is one supervisor unit, not one unit per module.
+    specs.push({ name: record.bundle ? '0kay' : `0kay-${shortName(record.name)}`, command: record.start, cwd: record.cwd })
   }
 
   const binDirs = await toolchainBinDirs(HOME)
@@ -371,6 +373,14 @@ async function stopPackage(name) {
   if (!record) throw new Error(`${name} is not installed`)
   const units = await packageUnits(record, null)
   await stopServices({ home: HOME, names: units.map((unit) => unit.name) })
+  // Stopping the service manager can kill the supervisor without letting it
+  // shut its children down. The bundle record knows how to ask the launcher to
+  // sweep them.
+  if (record.bundle) {
+    const command = [...record.start]
+    command[command.length - 1] = 'down'
+    await run(command, record.cwd, {}).catch(() => {})
+  }
   console.log(`Stopped ${units.map((unit) => unit.name).join(', ') || '(no services)'}.`)
 }
 
@@ -445,13 +455,21 @@ async function selfUpdate() {
 
 const HELP = [
   'install:',
-  '  0kay-pm install                install everything locally (same as: install 0kay)',
+  '  0kay-pm install                download the prebuilt 0KAY bundle and start it (fast path)',
+  '  0kay-pm install --build        compile everything from source instead (needs toolchains)',
   '  0kay-pm install <name>         short names: 0kay core webui life mocr agent mcp',
   '  0kay-pm install <name>@1.2.3   pin a release tag',
   '  0kay-pm install @<path>        install from a local checkout (its manifest.json names it)',
   '',
   'run it:',
   '  0kay-pm start <name> [--foreground]    stop <name>    status <name>    uninstall <name>',
+  '  install --no-start installs without registering the boot service.',
+  '',
+  'The default install downloads the platform bundle from the 0KAY release:',
+  'Core, mocr, LIFE, the WebUI, the TUI and (unless built --without-agent)',
+  'Agent + MCP, all prebuilt. Nothing is compiled and no toolchain is fetched.',
+  'Join an existing installation on another machine with --build:',
+  '    --pair | --core <id>     install against a Core on another machine (LAN pairing)',
   '',
   'no questions asked:',
   '  Ports default to 8080 / 50051 / 3000, Core binds to loopback, services start on',
@@ -459,7 +477,6 @@ const HELP = [
   '    --interactive            ask for ports and LAN exposure (the old behaviour)',
   '    --core-port <n>  --core-grpc-port <n>  --webui-port <n>',
   '    --expose | --bind-host <addr> | --no-expose',
-  '    --pair | --core <id>     install against a Core on another machine (LAN pairing)',
   '    --expose-lan             bind the agent gRPC to 0.0.0.0 (plaintext, Bearer token only)',
   '',
   'network:',
@@ -471,7 +488,8 @@ const HELP = [
   '    --mirror <url>           use that GitHub proxy instead of the default',
   '  --proxy                  download through the gh-proxy.com mirror',
   '  --proxy host:port        tunnel through that HTTP proxy (HTTPS_PROXY works too)',
-  '  --source <local-tree>    install a local checkout instead of a tarball',
+  '  --source <local-tree>    install a local checkout (implies --build)',
+  '  --build | --from-source  compile from source instead of the release bundle',
   '  --no-toolchain-download  never fetch go/node/python; use what is on PATH',
   '',
   'other:',
@@ -554,6 +572,32 @@ const commands = {
       target.name = canonicalName(target.name)
     }
 
+    const fromSource = Boolean(target.source) || has('--build') || has('--from-source') || has('--source')
+    if (!fromSource && target.name === '@razuresoft/0kay') {
+      if (has('--pair') || flag('--core') != null || has('--expose-lan')) {
+        throw new Error('The prebuilt bundle is a complete local install; use --build for pairing or a remote Core')
+      }
+      const choices = await portChoices(target.name, { interactive: has('--interactive') })
+      const runtimeEnv = { ...portEnv(choices, false), ...bindEnv(choices.bindHost, target.name) }
+      if (choices.bindHost) console.log(`Exposing Core on ${choices.bindHost}; it will be reachable from the network without authentication.`)
+      const record = await installBundle({
+        home: HOME,
+        version: target.version,
+        mirror: githubMirror,
+        proxyUrl,
+        runtimeEnv,
+      }, state)
+      await saveState()
+      console.log(`Installed ${record.name}@${record.version} (prebuilt bundle).`)
+      if (has('--no-start')) {
+        console.log(`Start it with: 0kay-pm start ${record.name}`)
+        return
+      }
+      if (has('--foreground')) await startForeground(record)
+      else await startServices(record)
+      return
+    }
+
     // Always look for a Core on the LAN: finding one is how this machine joins an
     // existing install, and silently ignoring it would be worse than the two
     // seconds the broadcast costs. What we no longer do is make you pick a number
@@ -575,7 +619,9 @@ const commands = {
     await saveState()
     console.log(`Installed ${record.name}@${record.version}.`)
 
-    if (has('--foreground')) await startForeground(record)
+    if (has('--no-start')) {
+      console.log(`Start it with: 0kay-pm start ${record.name}`)
+    } else if (has('--foreground')) await startForeground(record)
     else await startServices(record)
 
     if (CORE_PACKAGES.has(record.name)) {
@@ -593,6 +639,19 @@ const commands = {
     }
     target.name = canonicalName(target.name)
     if (!state.installed[target.name]) throw new Error(`${target.name} is not installed`)
+    const fromSource = Boolean(target.source) || has('--build') || has('--from-source') || has('--source')
+    if (!fromSource && state.installed[target.name].bundle) {
+      console.log(`Updating ${target.name}${target.version ? `@${target.version}` : ' to the latest release'} (prebuilt bundle).`)
+      const record = await installBundle({
+        home: HOME,
+        version: target.version,
+        mirror: githubMirror,
+        proxyUrl,
+      }, state)
+      await saveState()
+      console.log(`Updated ${record.name}@${record.version}. Restart it: 0kay-pm stop ${record.name} && 0kay-pm start ${record.name}`)
+      return
+    }
     console.log(`Updating ${target.name}${target.version ? `@${target.version}` : ' to the latest main branch'}.`)
     const record = await installPackage(target.name, {
       home: HOME,

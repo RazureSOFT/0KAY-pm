@@ -1,41 +1,55 @@
 # 0kay-pm
 
-Fast package manager for the 0KAY platform. Install 0KAY and its plugins with
-Node.js 22+ only — **git is not required**. Sources are downloaded as GitHub
-`archive` tarballs (branch or release tag) and extracted in-process; if a
-module's Go/Python build toolchain is missing, the matching runtime is
-downloaded into `~/.0kay/toolchains` automatically (see below).
+Package manager for the 0KAY platform.
+
+The default install is a **prebuilt bundle**: Core, mocr, LIFE, the WebUI, the
+TUI, the supervisor and (unless the release was built without it) Agent + MCP
+are downloaded from the GitHub release and unpacked into `~/.0kay`. The
+Windows/macOS/Linux installers ship this CLI as `0kay-pm`, so npm is only needed
+when installing the CLI separately. No Go, Node
+or Python toolchain is needed on the target machine, and install/update take
+seconds.
+
+`--build` keeps the original flow: download the source archives and compile them
+with auto-fetched toolchains. Use it for unreleased commits, local checkouts, or
+LAN pairing against a Core on another machine.
 
 ## Install the CLI
 
 ```powershell
-# Standalone repository install (recommended, no git involved)
+# Standalone repository install (no git involved)
 npm install -g https://codeload.github.com/RazureSOFT/0KAY-pm/tar.gz/main
 
 # Or from a local checkout
 npm install -g ./pm
 
-0kay-pm discover
-0kay-pm install @razuresoft/0kay-agent
-0kay-pm install @razuresoft/0kay
-0kay-pm update @razuresoft/0kay-agent
-0kay-pm start @razuresoft/0kay
+0kay-pm install                          # prebuilt bundle, starts on boot
+0kay-pm install --build                  # compile from source (old flow)
+0kay-pm install --build --pair           # join a Core on the LAN
+0kay-pm install @razuresoft/0kay-agent   # individual source package
+0kay-pm update                           # latest bundle
+0kay-pm start 0kay
 ```
 
 `0kay-pm install@razuresoft/0kay` is accepted as well. Once published to npm,
-`npx @razuresoft/0kay-pm install @razuresoft/0kay-agent` will work; the package
-has not been published yet.
+`npx @razuresoft/0kay-pm install` will work; the package has not been published
+yet.
+
+The bundle is selected by OS and CPU (`windows`/`macos`/`linux`,
+`x64`/`arm64`). On Windows arm64 the Python components are x64 and run under
+Windows' built-in x64 emulation; everything else is native.
 
 ## Build toolchains
 
-Manifest build commands (`go build`, `python -m pip install`, `npm run build`)
-run with the system toolchains when present. When `go`, `node` or `python` is
-**missing**, 0kay-pm downloads an official, checksum-verified runtime into
-`~/.0kay/toolchains/<name>/<version>` and uses it for that command — no `sudo`
-and no system changes. Go versions are read from the package `go.mod` (falling
-back to a pinned default), and downloads honor `--proxy` / `HTTPS_PROXY` like
-repository fetches. The same proxy is exported to build commands, so Go's
-module proxy, `pip` and `npm` reuse the tunnel.
+This section applies to `--build` (and to installing individual source
+packages). Manifest build commands (`go build`, `python -m pip install`,
+`npm run build`) run with the system toolchains when present. When `go`, `node`
+or `python` is **missing**, 0kay-pm downloads an official, checksum-verified
+runtime into `~/.0kay/toolchains/<name>/<version>` and uses it for that command
+— no `sudo` and no system changes. Go versions are read from the package
+`go.mod` (falling back to a pinned default), and downloads honor `--proxy` /
+`HTTPS_PROXY` like repository fetches. The same proxy is exported to build
+commands, so Go's module proxy, `pip` and `npm` reuse the tunnel.
 
 Disable it with `--no-toolchain-download` (or `OKAY_TOOLCHAIN_DOWNLOAD=0`).
 Checksum verification fails closed; override only when a publisher does not
@@ -44,14 +58,31 @@ provide checksums with `OKAY_TOOLCHAIN_INSECURE=1`. Pin versions with
 
 ## Releases and versions
 
-Every install downloads the `main` branch by default. Pin a published release
-by appending `@version` to the package (or passing `--version`); the release
-tag `v<version>` is fetched from GitHub:
+The default install and update fetch the matching asset from the latest 0KAY
+GitHub release:
+
+```
+0kay-linux-x64-v0.1.4.tar.gz   (and .sha256)
+```
+
+Assets are checksum-verified when a `.sha256` is published, extracted into a
+staging directory, and swapped in atomically. `data/`, `models/` and
+`runtime-env.json` are carried over so an update keeps the companion's memory
+and the configured ports. Start the new version with:
 
 ```powershell
-0kay-pm install @razuresoft/0kay@0.1.0
-0kay-pm update @razuresoft/0kay@0.1.0   # pin back to a release
-0kay-pm update @razuresoft/0kay          # latest main branch
+0kay-pm stop 0kay
+0kay-pm start 0kay
+```
+
+With `--build`, every install downloads the `main` branch by default. Pin a
+published release by appending `@version` to the package (or passing
+`--version`); the release tag `v<version>` is fetched from GitHub:
+
+```powershell
+0kay-pm install --build @razuresoft/0kay@0.1.0
+0kay-pm update --build @razuresoft/0kay@0.1.0   # pin back to a release
+0kay-pm update --build @razuresoft/0kay           # latest main branch
 ```
 
 `update` rebuilds the package into a staging directory and swaps it in
@@ -102,15 +133,21 @@ the detached fallback, to `~/.0kay/logs/<service>.log`. No browser is opened.
 
 ## Ports
 
-Installing `@razuresoft/0kay`, `@razuresoft/0kay-core` or
-`@razuresoft/0kay-webui` on an interactive terminal asks for the Core HTTP port
+The prebuilt install uses Core HTTP 8080 and Core gRPC 50051 and writes them to
+`runtime-env.json`; `--interactive` asks instead. The flags skip the prompt for
+that port either way:
+
+```powershell
+0kay-pm install --core-port 18080 --bind-host 127.0.0.1
+```
+
+Source installs of `@razuresoft/0kay`, `@razuresoft/0kay-core` or
+`@razuresoft/0kay-webui` on an interactive terminal ask for the Core HTTP port
 (8080), Core gRPC port (50051) and WebUI port (3000). Answers are written to
 `runtime-env.json` and applied by `0kay-pm start`.
 
-Scripts can pass the flags instead — the flags skip the prompts for that port:
-
 ```powershell
-0kay-pm install @razuresoft/0kay --no-pair --core-port 18080 --webui-port 3300
+0kay-pm install --build @razuresoft/0kay --no-pair --core-port 18080 --webui-port 3300
 ```
 
 When pairing with a remote Core, connection addresses come from pairing; port
@@ -125,11 +162,15 @@ non-interactively, `--bind-host <addr>` picks a specific interface, and
 
 ## Discovery and pairing
 
-Every install starts with a UDP LAN scan that refreshes the Core history in
-`~/.0kay/state.json`. Choose a Core and confirm pairing, then approve the same
-code under Core → Settings → Devices. Without a discovered Core the install
-still proceeds; re-install or restart to configure the connection later.
-`--no-pair` skips the pairing prompts (the scan still runs).
+The prebuilt bundle is a complete local install: it always runs its own Core,
+so it skips discovery and pairing. Use `--build` when this machine should join
+an existing Core instead.
+
+A `--build` install starts with a UDP LAN scan that refreshes the Core history
+in `~/.0kay/state.json`. Choose a Core and confirm pairing, then approve the
+same code under Core → Settings → Devices. Without a discovered Core the
+install still proceeds; re-install or restart to configure the connection
+later. `--no-pair` skips the pairing prompts (the scan still runs).
 `--advertise <LAN-IP>` selects the callback interface when detection fails;
 cross-subnet discovery depends on your router/firewall.
 
