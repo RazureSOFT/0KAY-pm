@@ -5,6 +5,7 @@ import path from 'node:path'
 import readline from 'node:readline/promises'
 import { randomInt } from 'node:crypto'
 import { discover, pinnedRequest, expandTargets, localSubnets } from '../src/discovery.mjs'
+import { localCore, listExtensions, enableExtensions, installExtension, removeExtension } from '../src/extensions.mjs'
 import {
   installPackage,
   uninstallPackage,
@@ -498,6 +499,14 @@ const HELP = [
   '  0kay-pm mirror [--probe]   show (or race) the download sources',
   '  0kay-pm self-update [<version>] [--beta | --main] [--source <local-tree>]',
   '',
+  'agent extensions (plugins that change how the agent behaves):',
+  '  0kay-pm ext                         list installed extensions',
+  '  0kay-pm ext add <directory>         install from a local directory (--replace to overwrite)',
+  '  0kay-pm ext enable <name>           turn one on',
+  '  0kay-pm ext disable <name>          turn one off',
+  '  0kay-pm ext rm <name>               remove it',
+  '  `0kay-pm plugin` and `0kay-pm extensions` are the same command.',
+  '',
   'Services keep running after the session ends and start on boot; only `stop`',
   'shuts them down. --foreground runs in this terminal instead.',
 ].join('\n')
@@ -732,12 +741,82 @@ const commands = {
     await printStatus(name)
   },
 
+  /**
+   * Agent extensions: the plugins that change how the agent behaves.
+   *
+   * Managed through Core rather than by writing into a directory, so the same
+   * command works against a Core on another machine and the allow-list stays in
+   * one place.
+   */
+  async ext() {
+    const core = localCore({ ...state, home: HOME })
+    const action = argv[1] && !argv[1].startsWith('-') ? argv[1] : 'list'
+    switch (action) {
+      case 'list': {
+        const body = await listExtensions(core)
+        const rows = body?.extensions || []
+        if (!rows.length) {
+          console.log(`No agent extensions installed.\nDirectory: ${body?.dir || '(unknown)'}`)
+          return
+        }
+        for (const row of rows) {
+          const flags = []
+          if (row.enabled === false) flags.push('disabled')
+          if (row.problem) flags.push(row.problem)
+          if (row.entry) flags.push(`module:${row.entry}`)
+          if (row.permissions?.length) flags.push(row.permissions.join(','))
+          const title = row.title && row.title !== row.name ? ` — ${row.title}` : ''
+          console.log(`${row.enabled === false ? ' ' : '*'} ${row.name}${row.version ? `@${row.version}` : ''}${title}${flags.length ? `  [${flags.join('; ')}]` : ''}`)
+        }
+        const agent = body?.agent
+        if (agent && agent.ok === false) {
+          console.log(`\nThe agent did not confirm the reload: ${agent.error}`)
+        }
+        return
+      }
+      case 'add':
+      case 'install': {
+        const source = argv[2] && !argv[2].startsWith('-') ? argv[2] : flag('--path')
+        if (!source) throw new Error('Usage: 0kay-pm ext add <directory> [--replace]')
+        const resolved = path.resolve(source)
+        const body = await installExtension(core, { path: resolved, replace: has('--replace') || has('-f') })
+        const loaded = body?.agent?.report?.loaded
+        console.log(`Installed ${body?.name} into ${body?.dir}`)
+        if (Array.isArray(loaded)) console.log(`Loaded by the agent: ${loaded.join(', ') || '(none)'}`)
+        else if (body?.agent?.error) console.log(`Installed, but the agent could not reload: ${body.agent.error}`)
+        return
+      }
+      case 'rm':
+      case 'remove': {
+        const name = argv[2] && !argv[2].startsWith('-') ? argv[2] : null
+        if (!name) throw new Error('Usage: 0kay-pm ext rm <name>')
+        const body = await removeExtension(core, { name })
+        console.log(`Removed ${body?.removed}`)
+        return
+      }
+      case 'enable':
+      case 'disable': {
+        const name = argv[2] && !argv[2].startsWith('-') ? argv[2] : null
+        if (!name) throw new Error(`Usage: 0kay-pm ext ${action} <name>`)
+        const body = await enableExtensions(core, { name, enabled: action === 'enable' })
+        const state2 = body?.enabled?.length ? body.enabled.join(', ') : 'all installed'
+        console.log(`${name} ${action === 'enable' ? 'enabled' : 'disabled'}; now: ${state2}`)
+        return
+      }
+      default:
+        throw new Error(`Unknown ext action "${action}". Try: list, add, rm, enable, disable`)
+    }
+  },
+
   async 'self-update'() {
     await selfUpdate()
   },
 }
 commands.selfupdate = commands['self-update']
 commands.upgrade = commands['self-update']
+// `0kay-pm plugin` reads better than `ext` for anyone coming from other tools.
+commands.plugin = commands.ext
+commands.extensions = commands.ext
 
 try {
   const handler = commands[argv[0]]
